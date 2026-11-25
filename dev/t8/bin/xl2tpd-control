@@ -1,0 +1,2 @@
+#!/bin/bash
+echo "xl2tpd-control $*" >> $(dirname $0)/../calls

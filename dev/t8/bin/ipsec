@@ -1,0 +1,6 @@
+#!/bin/bash
+case "$1" in
+ status) cat $(dirname $0)/../ipsec.status;;
+ statusall) cat $(dirname $0)/../ipsec.statusall;;
+ up|down) echo "ipsec $*" >> $(dirname $0)/../calls; echo "connection '$2' established successfully";;
+esac

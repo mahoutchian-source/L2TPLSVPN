@@ -1,0 +1,10 @@
+#!/bin/bash
+D=$(dirname "$0")/../ipt; mkdir -p $D; touch $D/rules
+a=("$@"); [ "${a[0]}" = -t ] && a=("${a[@]:2}")
+case "${a[0]}" in
+ -N) grep -qx "N ${a[1]}" $D/rules && exit 1; echo "N ${a[1]}" >> $D/rules;;
+ -C) grep -qxF "A ${a[*]:1}" $D/rules;;
+ -A) echo "A ${a[*]:1}" >> $D/rules;;
+ -F) grep -v "^A ${a[1]} " $D/rules > $D/r2; mv $D/r2 $D/rules;;
+ -S) if [ "${a[1]}" = POSTROUTING ]; then echo "-A POSTROUTING -o ens5 -j MASQUERADE"; else grep "^A ${a[1]} " $D/rules | sed 's/^A /-A /'; fi;;
+esac

@@ -1,0 +1,2 @@
+#!/bin/bash
+f=$(dirname $0)/../dns.$2; [ -f $f ] && echo "$(cat $f)  STREAM $2"; exit 0
