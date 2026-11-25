@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 CONF_DIR = os.environ.get("CONF_DIR", "/etc/l2tp-gw")
 SITES = os.path.join(CONF_DIR, "sites.conf")
 WEB_CONF = os.path.join(CONF_DIR, "web.conf")
