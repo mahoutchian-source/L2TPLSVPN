@@ -35,13 +35,17 @@ ok "first reading has no SA but the fresh one has: no alert, no repair, state cl
 rm -f ipsec.seq ipsec.calls; echo $(( $(date +%s) - 300 )) > st/noipsec-cl
 bash $GW watch
 ok "SA really missing: alert and repair attempt as before" "[ -f st/noipsec-alerted-cl ] && grep -q 'repair attempt 1' st/watch.log"
-echo "--- status shows multipath routes"
+echo "--- status shows multipath routes (one line) and only counts route-manager routes"
 ip tuntap add dev ppp-b mode tun; ip addr add 10.2.2.2 peer 10.2.2.1/32 dev ppp-b; ip link set ppp-b up
-ip route replace 10.55.0.0/24 nexthop dev ppp-cl weight 1 nexthop dev ppp-b weight 1
+ip route replace 10.55.0.0/24 metric 2 nexthop dev ppp-cl weight 1 nexthop dev ppp-b weight 1
+for i in $(seq 1 200); do ip route replace 10.60.$i.0/24 proto 98 metric 4 nexthop dev ppp-cl weight 1 nexthop dev ppp-b weight 1; done
 bash $GW status > status.out 2>&1
-ok "routes via ppp-b lists the multipath route" "awk '/routes via ppp-b:/{f=1;next} /routes via /{f=0} f' status.out | grep -q '10.55.0.0/24'"
-ok "routes via ppp-cl lists it too, with both nexthops" "awk '/routes via ppp-cl:/{f=1;next} /routes via /{f=0} f' status.out | grep -q '10.55.0.0/24' && awk '/routes via ppp-cl:/{f=1;next} /routes via /{f=0} f' status.out | grep -c nexthop | grep -q 2"
-ip route del 10.55.0.0/24 2>/dev/null; ip link del ppp-b; ip link del ppp-cl
+ok "routes via ppp-b: the multipath route in ONE line with both tunnels" "awk '/routes via ppp-b:/{f=1;next} /routes via /{f=0} f' status.out | grep -q '10.55.0.0/24 metric 2.* via ppp-cl, ppp-b'"
+ok "routes via ppp-cl: the same line" "awk '/routes via ppp-cl:/{f=1;next} /routes via /{f=0} f' status.out | grep -q '10.55.0.0/24 metric 2.* via ppp-cl, ppp-b'"
+ok "no nexthop lines in the output" "! grep -q nexthop status.out"
+ok "200 route-manager routes are only counted, per tunnel" "[ \$(grep -c '200 routes of the route manager' status.out) = 2 ] && ! grep -q '10.60.5.0/24' status.out"
+ok "whole status output stays short (under 60 lines)" "[ \$(wc -l < status.out) -lt 60 ]"
+for i in $(seq 1 200); do ip route del 10.60.$i.0/24 2>/dev/null; done; ip route del 10.55.0.0/24 2>/dev/null; ip link del ppp-b; ip link del ppp-cl
 echo "--- duplicate network in two dial-in clients"
 mkdir -p c/routes.d
 printf '[a]\nmode = server\nuser = ua\npass = passwordaa1\nip = 10.99.99.2\nroutes = 172.17.248.0/24\n\n[b]\nmode = server\nuser = ub\npass = passwordbb2\nip = 10.99.99.3\nroutes = 172.17.248.0/24\n\n[c]\nmode = server\nuser = uc\npass = passwordcc3\nip = 10.99.99.4\nroutes = 172.17.252.0/24\n' > c/sites.conf
