@@ -3,6 +3,13 @@
 Newest first. Rule: every change adds a line here (what, why, where in the code) and bumps VERSION in
 `bin/l2tp-gw` AND `bin/l2tp-gw-web`. Bugs found and their fixes go to KNOWN-ISSUES.md.
 
+## 1.0.3 (2026-11-25)
+MTU: measure the right packet size and set it per connection.
+- **MTU per connection** (option `mtu`, 576 to 1500, empty = 1280): outgoing sites pass it to pppd (`mtu`/`mru`; used at the next connect), dial-in clients get it on the live link at once (`ip link set dev pppN mtu X` by the ip-up hook and by `dialin-sync`). The TCP MSS clamp already in the firewall follows the link MTU. Panel: new "Packet size (MTU)" box in Edit site and Edit client, and an "MTU 1400" chip on the Sites page. (gw: `reset_site`, parser, validation, `gen_site`, `mtu_apply_cb`, `cmd_mtu_apply`; web: `KEYS`, edit forms, `save`, `dialin_save`, `site_rows`)
+- **MTU measurement:** `l2tp-gw mtu-test NAME|ADDRESS [IFACE]` sends pings that may not be fragmented (`ping -M do`) and searches for the largest size that passes. For a connected site or client it uses the tunnel; for any IPv4 address it uses the normal route (or the given interface). A ppp link is raised to 1500 for the test and always put back. It only suggests a value, nothing is changed. Last line: `RESULT addr=... dev=... current=... max=... suggested=...`. (gw: `cmd_mtu_test`)
+- **Panel page "Measure MTU"** (menu, `/mtu`): choose a connection or type an address, measure, press "Use N for NAME" to save it, and see the matching MikroTik command (`/interface l2tp-client set ... max-mtu=N max-mru=N` for a dial-in client, `/interface l2tp-server server set max-mtu=N max-mru=N` for an outgoing site). (web: `mtu_page`, `mtu_run`, `mtu_set`)
+- Tests: new `dev/t29/run.sh` (30 checks, uses a `ping` stub with a size limit).
+
 ## 1.0.2 (2026-11-24)
 - **Bug fix (my mistake in 1.0.1): the Sites page and `l2tp-gw status` became thousands of lines long and froze the browser.** 1.0.1 listed every multipath route under every tunnel, and the route manager (country lists, proto 98) creates thousands of them. Now `status` shows a multipath route once, in ONE line (`172.17.192.0/22 metric 2 via ppp-a, ppp-b`) under each of its tunnels, and routes of the route manager only as a count ("N routes of the route manager ... see the Routes page"). The routing table is also read once instead of once per tunnel. (gw: `cmd_status`; test t28 now builds 200 such routes and checks the output stays under 60 lines)
 

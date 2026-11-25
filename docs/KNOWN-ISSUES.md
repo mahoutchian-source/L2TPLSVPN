@@ -10,6 +10,7 @@
 - Possible IP change of the Setuda sites seen in status: never verified in logs.
 
 ## Open items
+- MTU measuring (1.0.3) was tested with a ping stub, not on a real tunnel. It measures one direction (this server toward the address); the other direction may differ. Replies can be dropped by some routers (ICMP blocked): then "No answer" is shown and nothing is guessed. A new MTU on an outgoing site is used after the next reconnect.
 - Cause of the "up without encryption" / "panel down but router still shows it" episodes is NOT proven. 1.0.1 only reduces the symptoms (re-check, PPP keep-alive, firewall for `require`, clearer panel). If it happens again, save `l2tp-gw check`, `ipsec statusall`, `/var/lib/l2tp-gw/watch.log` and the router's log at that moment.
 - Some ISPs/filters seem to block L2TP/IPsec (UDP 500/4500, ESP) while L2TPv3 passes; the server (xl2tpd) speaks L2TPv2 only. Ideas (WireGuard on UDP 443, Xray/REALITY, SSTP) are discussed but NOT built; no decision yet.
 - `ipsec_mode = require` blocks only incoming plain UDP 1701; outgoing plain packets are already held back by strongSwan's policy while no SA exists (not verified on a real server).
