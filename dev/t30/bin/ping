@@ -1,0 +1,8 @@
+#!/bin/bash
+# stub: answers when -s SIZE is not above the limit in ../pinglimit (payload bytes); -M do means no fragmentation; logs the call
+D=$(dirname $0)/..
+echo "ping $*" >> $D/ping.log
+size=56; prev=""
+for a in "$@"; do [ "$prev" = "-s" ] && size=$a; prev=$a; done
+limit=$(cat $D/pinglimit 2>/dev/null || echo 1472)
+[ "$size" -le "$limit" ]
