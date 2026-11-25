@@ -9,6 +9,15 @@ An Ubuntu/Debian server that acts as an **L2TP/IPsec gateway** for MikroTik rout
 
 ## Install (fresh Ubuntu/Debian server, as root)
 
+One command, always the newest version from GitHub (the same command also upgrades; settings are kept):
+
+    curl -fsSL https://raw.githubusercontent.com/mahoutchian-source/L2TPLSVPN/main/install.sh | bash
+
+With a settings backup (move to a new server): add `-s -- --restore /root/l2tp-gw-sites-XXXX.conf` after `bash`.
+The script downloads the files, checks both programs for syntax errors and only then installs.
+
+Or from the single installer file (no internet needed on the server):
+
     bash l2tp-gw-install.sh
 
 It installs the packages, prepares the server, installs the programs and the web panel and prints the
