@@ -80,6 +80,9 @@ Tell Claude: "Read docs/PROJECT-MEMORY.md and docs/CHANGELOG.md in the repo, the
 (https://github.com/mahoutchian-source/L2TPLSVPN), read these two files and docs/KNOWN-ISSUES.md, check `bin/l2tp-gw` and `bin/l2tp-gw-web`
 have the same VERSION, and ask Ali what he wants next (usual options: look of the other pages, anti-filtering tunnel, the open items above).
 
+## Where the tests are
+All test folders (t8 ... t31, allt.sh, screenshot scripts) are packed in `dev-tests.tar.gz` at the repo root (reason: GitHub web upload takes 100 files at a time, and Ali uploads a full package every time). To use them: `mkdir -p dev && tar xzf dev-tests.tar.gz -C dev && ln -s ../bin dev/build`. `dev/make-installer.sh` and `dev/installer-head.sh` stay as plain files (install.sh downloads them). Run each test from its own folder; do not use `pkill -f l2tp-gw-web` inside a command that contains that text.
+
 ## Log of changes to this file
 - 2026-11-25: created (reason: Ali asked for a project memory so a new session understands the files without the old conversation).
 - 2026-11-25: added version 1.0.4 (MTU of dial-in clients after reconnect, found by Ali on the real server). Lesson: an update that adds a hook needs the hook rewritten without `apply`; test the "updated but not applied" state.
@@ -87,3 +90,4 @@ have the same VERSION, and ask Ali what he wants next (usual options: look of th
 - 2026-11-25: version 1.0.5 (MTU verification and router MRU), requested by Ali: real ceiling per tunnel and amber warning when the set MTU does not pass.
 - 2026-11-25: version 1.1.0, requested by Ali: connection quality monitoring (loss, delay, jitter, speed, grade, diagnosis, two new pages, Telegram alert on/off). Lessons: under `set -o pipefail` a failing `ip addr show` ends the script (use `|| true`); a literal `%` inside a `%`-formatted HTML string breaks the page (write `%%`); never run `pkill -f l2tp-gw-web` from a command line that contains that text; killed test runs leave tun devices behind (delete `ppp-*` before re-running).
 - 2026-11-25: version 1.0.6, requested by Ali: measure along the routing table (not a forced interface), show the way out, two colours for two different MTU problems.
+- 2026-11-25: tests packed into dev-tests.tar.gz (Ali's wish: one full package per upload instead of copying folders by hand); added section "Where the tests are".
