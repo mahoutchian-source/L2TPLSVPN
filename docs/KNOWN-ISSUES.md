@@ -35,3 +35,7 @@
 
 - Quality (1.1.0/1.2.0): two tunnels with the same local and remote address share the reply path, so loss and the MTU check can differ between them for no real reason. Give each tunnel its own address.
 - Traffic (1.2.0): the forecast of the traffic limit is a straight-line guess from the counter since the last reset; it is shown only after one hour of data.
+
+- MSS (1.2.1): the per-tunnel rules fix TCP only. UDP traffic that is bigger than the tunnel allows is split (no DF) or lost (DF set and ICMP blocked). The fix is a correct MTU per tunnel and ICMP "packet too big" not blocked (see the health lines).
+
+- Automatic reconnect (1.3.0): a dial-in client is only disconnected; it comes back only if the MikroTik redials by itself. The 5-minute blocks need at least 3 answered minutes; a tunnel that is down is not counted as poor (the watcher's own down handling takes over).

@@ -35,7 +35,7 @@ set -euo pipefail
 : "${XL2TPD_CONF:=/etc/xl2tpd/xl2tpd.conf}"
 : "${SECRETS:=/etc/ipsec.secrets}"
 : "${NO_RESTART:=0}"
-VERSION="1.2.0"
+VERSION="1.3.0"
 SITES="$CONF_DIR/sites.conf"
 DIALIN="${DIALIN_FILE:-$CONF_DIR/dialin.conf}"      # settings of the dial-in server (see "dial-in" below)
 TAG="# managed by l2tp-gw"
@@ -55,6 +55,7 @@ ike_service() {
 # ---------- sites file parsing ----------
 reset_site() { S_NAME=""; S_HOST=""; S_PSK=""; S_USER=""; S_PASS=""; S_MPPE="no"; S_ROUTES=""; S_NAT="no"
   S_REC_EVERY=""; S_REC_AT=""; S_REC_WIN=""; S_QUOTA=""; S_QPERIOD="day"; S_QDIR="total"; S_QWARN="80"; S_IPSEC_MODE="heal"; S_LCP="on"; S_MTU=""
+  S_POOR_LOSS=""; S_POOR_RTT=""; S_POOR_JITTER=""; S_POOR_ALERT_MIN=""; S_POOR_RECONNECT_MIN=""; S_POOR_COOLDOWN_MIN=""; S_POOR_MAX_DAY=""; S_POOR_WINDOW=""; S_POOR_OUTSIDE=""
   S_MODE="client"; S_IP=""; S_DISABLED="no"; S_ACC_INET="yes"; S_ACC_CLIENTS="yes"; S_ACC_SITES="yes"; }
 
 trim() { sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
@@ -92,6 +93,15 @@ for_each_site() {   # calls function "$1" once per [site] block, vars in S_*
           ipsec_mode)       S_IPSEC_MODE=$val ;;
           lcp_echo)         S_LCP=$val ;;
           mtu)              S_MTU=$val ;;
+          poor_loss)          S_POOR_LOSS=$val ;;
+          poor_rtt)           S_POOR_RTT=$val ;;
+          poor_jitter)        S_POOR_JITTER=$val ;;
+          poor_alert_min)     S_POOR_ALERT_MIN=$val ;;
+          poor_reconnect_min) S_POOR_RECONNECT_MIN=$val ;;
+          poor_cooldown_min)  S_POOR_COOLDOWN_MIN=$val ;;
+          poor_max_day)       S_POOR_MAX_DAY=$val ;;
+          poor_window)        S_POOR_WINDOW=$val ;;
+          poor_outside)       S_POOR_OUTSIDE=$val ;;
           mode)             S_MODE=$val ;;
           ip)               S_IP=$val ;;
           disabled)         S_DISABLED=$val ;;
@@ -175,6 +185,7 @@ validate_automation() {
   if [ -n "$S_MTU" ]; then
     [[ "$S_MTU" =~ ^[0-9]{3,4}$ ]] && [ "$((10#$S_MTU))" -ge 576 ] && [ "$((10#$S_MTU))" -le 1500 ] || die "$w mtu must be a number from 576 to 1500 (empty = 1280)"
   fi
+  validate_quality_settings "$w" "$S_POOR_LOSS" "$S_POOR_RTT" "$S_POOR_JITTER" "$S_POOR_ALERT_MIN" "$S_POOR_RECONNECT_MIN" "$S_POOR_COOLDOWN_MIN" "$S_POOR_MAX_DAY" "$S_POOR_WINDOW" "$S_POOR_OUTSIDE"
 }
 
 # ---------- dial-in (this server ACCEPTS L2TP/IPsec from routers that cannot be called: no public IP, behind NAT) ----------
@@ -269,6 +280,20 @@ validate_server_site() {
 }
 
 declare -gA DI_USER=() DI_IP=()      # user / address -> site, to refuse duplicates (reset before every pass)
+
+# the same checks for the limits of one connection and for the defaults in quality.conf (empty = not set)
+validate_quality_settings() {
+  local w=$1 loss=$2 rtt=$3 jit=$4 amin=$5 rmin=$6 cool=$7 maxd=$8 win=$9 out=${10}
+  [ -z "$loss" ] || { [[ "$loss" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk -v v="$loss" 'BEGIN { exit !(v >= 0.5 && v <= 100) }' || die "$w poor_loss must be a percent from 0.5 to 100"; }
+  [ -z "$rtt" ] || { [[ "$rtt" =~ ^[0-9]{2,5}$ ]] && [ "$((10#$rtt))" -ge 20 ] && [ "$((10#$rtt))" -le 60000 ] || die "$w poor_rtt must be a delay in ms from 20 to 60000"; }
+  [ -z "$jit" ] || { [[ "$jit" =~ ^[0-9]{1,5}$ ]] && [ "$((10#$jit))" -ge 5 ] && [ "$((10#$jit))" -le 60000 ] || die "$w poor_jitter must be a delay swing in ms from 5 to 60000"; }
+  [ -z "$amin" ] || { [[ "$amin" =~ ^[0-9]{1,4}$ ]] && [ "$((10#$amin))" -ge 1 ] && [ "$((10#$amin))" -le 1440 ] || die "$w poor_alert_min must be minutes from 1 to 1440"; }
+  [ -z "$rmin" ] || { [[ "$rmin" =~ ^[0-9]{1,5}$ ]] && { [ "$((10#$rmin))" = 0 ] || { [ "$((10#$rmin))" -ge 10 ] && [ "$((10#$rmin))" -le 10080 ]; }; } || die "$w poor_reconnect_min must be 0 (off) or minutes from 10 to 10080"; }
+  [ -z "$cool" ] || { [[ "$cool" =~ ^[0-9]{1,5}$ ]] && [ "$((10#$cool))" -ge 10 ] && [ "$((10#$cool))" -le 10080 ] || die "$w poor_cooldown_min must be minutes from 10 to 10080"; }
+  [ -z "$maxd" ] || { [[ "$maxd" =~ ^[0-9]{1,2}$ ]] && [ "$((10#$maxd))" -ge 1 ] && [ "$((10#$maxd))" -le 48 ] || die "$w poor_max_day must be a number from 1 to 48"; }
+  [ -z "$win" ] || [[ "$win" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "$w poor_window must look like 03:00-07:00"
+  case "$out" in ''|yes|no) ;; *) die "$w poor_outside must be yes or no" ;; esac
+}
 
 validate_site() {
   [[ "$S_NAME" =~ $NAME_RE ]] || die "Bad site name '$S_NAME' (use a-z 0-9 -, max 11 chars)"
@@ -1172,6 +1197,15 @@ check_server_site() {
   if [ -n "$ifc" ] && iface_up "$ifc"; then
     up=1
     chk OK "$n: dial-in connected ($ifc, router address $S_IP)"
+    local mtu_now
+    mtu_now=$(cat "${SYS_NET:-/sys/class/net}/$ifc/mtu" 2>/dev/null || true)
+    case "$mtu_now" in ''|*[!0-9]*) ;; *)
+      if iptables -t mangle -C L2TPGW-MSS -i "$ifc" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$((mtu_now - 40))" 2>/dev/null; then
+        chk OK "$n: TCP size (MSS) is cut to $((mtu_now - 40)) both ways (link MTU $mtu_now)"
+      else
+        chk WARN "$n: no TCP size rule for $ifc at MTU $mtu_now yet (run: l2tp-gw mss-apply)"
+      fi ;;
+    esac
   else
     chk WARN "$n: dial-in site is not connected"
   fi
@@ -1216,6 +1250,16 @@ check_site() {
     peer=$(ip -o -4 addr show dev "$ifc" | awk '{for(i=1;i<=NF;i++) if($i=="peer"){sub("/.*","",$(i+1)); print $(i+1); exit}}')
     chk OK "$n: PPP up ($ifc ${addr:-?} -> ${peer:-?})"
     if [ -n "$peer" ]; then CHK_PEER[$n]=$peer; fi
+    local mtu_now
+    mtu_now=$(cat "${SYS_NET:-/sys/class/net}/$ifc/mtu" 2>/dev/null || true)
+    case "$mtu_now" in ''|*[!0-9]*) ;; *)
+      if iptables -t mangle -C L2TPGW-MSS -i "$ifc" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$((mtu_now - 40))" 2>/dev/null \
+         && iptables -t mangle -C L2TPGW-MSS -o "$ifc" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$((mtu_now - 40))" 2>/dev/null; then
+        chk OK "$n: TCP size (MSS) is cut to $((mtu_now - 40)) both ways (link MTU $mtu_now)"
+      else
+        chk WARN "$n: no TCP size rule for $ifc at MTU $mtu_now yet (run: l2tp-gw mss-apply)"
+      fi ;;
+    esac
     # PPP without an IPsec SA means plain L2TP: the MikroTik accepted it (use-ipsec=yes), but it is NOT encrypted
     if [ "$ipsec_ok" = 0 ] && [ "$mode" != allow ]; then
       chk FAIL "$n: PPP is up but IPsec is NOT established - traffic is not encrypted (on the MikroTik use-ipsec=require refuses this)"
@@ -1278,7 +1322,34 @@ mtu_apply_cb() {
   cur=$(ip -o link show dev "$ifc" 2>/dev/null | sed -n 's/.* mtu \([0-9]*\).*/\1/p')
   if [ "$cur" != "$want" ]; then ip link set dev "$ifc" mtu "$want" 2>/dev/null && echo "$S_NAME: $ifc mtu $cur -> $want"; fi
 }
-cmd_mtu_apply() { MTU_ONLY=${1:-}; for_each_site mtu_apply_cb; MTU_ONLY=""; }
+cmd_mtu_apply() { MTU_ONLY=${1:-}; for_each_site mtu_apply_cb; MTU_ONLY=""; cmd_mss_apply || true; }
+
+# mss-apply: the TCP segment size (MSS) of every tunnel is cut to "link MTU - 40" in BOTH directions (chain L2TPGW-MSS in the mangle table).
+# The older rule (--clamp-mss-to-pmtu) only looks at the interface a packet LEAVES by, so the SYN that goes from the router out to the
+# Internet kept its big MSS and the Internet server then sent packets that are too big for the tunnel. --set-mss never raises a value.
+# Rebuilt only when the list of tunnels or an MTU changed (signature file), so it is cheap to call every minute.
+cmd_mss_apply() {
+  command -v iptables >/dev/null 2>&1 || return 0
+  local dev mtu pair sig="" ipt=iptables
+  for dev in $(ip -o link show 2>/dev/null | awk -F': ' '$2 ~ /^ppp/ {sub("@.*", "", $2); print $2}'); do
+    mtu=$(cat "${SYS_NET:-/sys/class/net}/$dev/mtu" 2>/dev/null) || continue
+    case "$mtu" in ''|*[!0-9]*) continue ;; esac
+    [ "$mtu" -ge 576 ] || continue
+    sig="$sig $dev:$mtu"
+  done
+  if [ "$sig" = "$(cat "$STATE_DIR/mss-sig" 2>/dev/null)" ] && "$ipt" -t mangle -S L2TPGW-MSS >/dev/null 2>&1 \
+     && "$ipt" -t mangle -C FORWARD -j L2TPGW-MSS 2>/dev/null; then return 0; fi
+  "$ipt" -t mangle -N L2TPGW-MSS 2>/dev/null || true
+  "$ipt" -t mangle -F L2TPGW-MSS
+  for pair in $sig; do
+    dev=${pair%%:*}; mtu=${pair##*:}
+    "$ipt" -t mangle -A L2TPGW-MSS -i "$dev" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$((mtu - 40))"
+    "$ipt" -t mangle -A L2TPGW-MSS -o "$dev" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$((mtu - 40))"
+  done
+  "$ipt" -t mangle -C FORWARD -j L2TPGW-MSS 2>/dev/null || "$ipt" -t mangle -I FORWARD 1 -j L2TPGW-MSS
+  mkdir -p "$STATE_DIR" && printf '%s\n' "$sig" > "$STATE_DIR/mss-sig"
+  [ -n "${QUIET:-}" ] || echo "TCP size rules (MSS): $(printf '%s\n' $sig | grep -c .) tunnel(s)${sig:+ -$sig}"
+}
 
 mtu_find_cb() {      # finds the tunnel interface and the far address of site MTU_NAME (or of the site that owns interface MTU_BYDEV)
   local dev addr
@@ -1516,20 +1587,43 @@ quality_cb() {
   ) &
 }
 # alert_quality NAME: a Telegram message when the last 5 minutes were poor, and one when it is good again
+# pq_val KEY DEFAULT: the limit of THIS connection (S_* variables of the site being handled), else the default from quality.conf, else the built-in value
+pq_val() {
+  local var="S_${1^^}" v
+  v=${!var:-}
+  [ -n "$v" ] || v=$(awk -F= -v k="$1" '{ key=$1; gsub(/^[ \t]+|[ \t]+$/, "", key); if (key==k) { sub(/^[^=]*=/, ""); gsub(/^[ \t]+|[ \t]+$/, ""); print; exit } }' "$CONF_DIR/quality.conf" 2>/dev/null || true)
+  printf '%s' "${v:-$2}"
+}
+# pq_thresholds: Q_PL/Q_PR/Q_PJ = poor from (loss %, delay ms, swing ms); Q_GL/Q_GR/Q_GJ = good below (fair starts at about a third of "poor")
+pq_thresholds() {
+  Q_PL=$(pq_val poor_loss 5); Q_PR=$(pq_val poor_rtt 400); Q_PJ=$(pq_val poor_jitter 120)
+  Q_GL=$(awk -v v="$Q_PL" 'BEGIN { printf "%.3f", v * 0.2 }'); Q_GR=$(awk -v v="$Q_PR" 'BEGIN { printf "%.1f", v * 0.375 }'); Q_GJ=$(awk -v v="$Q_PJ" 'BEGIN { printf "%.1f", v / 3 }')
+}
+# pq_in_window HH:MM-HH:MM: is it that time now (time zone from Settings, general.conf)? Empty window = always.
+pq_in_window() {
+  local w=$1 tz now s e
+  [ -n "$w" ] || return 0
+  tz=$(awk -F= '{ k=$1; gsub(/[ \t]/, "", k); if (k=="timezone") { v=$2; gsub(/^[ \t]+|[ \t]+$/, "", v); print v; exit } }' "$CONF_DIR/general.conf" 2>/dev/null || true)
+  now=$(TZ=${tz:-UTC} date +%H:%M); s=${w%-*}; e=${w#*-}
+  if [[ "$s" < "$e" ]]; then [[ "$now" > "$s" || "$now" == "$s" ]] && [[ "$now" < "$e" ]]
+  else [[ "$now" > "$s" || "$now" == "$s" || "$now" < "$e" ]]; fi
+}
 quality_alert() {
-  local name=$1 log="$STATE_DIR/quality/$1.log" flag="$STATE_DIR/quality/$1.alert" r loss rtt jit oloss poor=0 good=0 verdict
+  local name=$1 log="$STATE_DIR/quality/$1.log" flag="$STATE_DIR/quality/$1.alert" r loss rtt jit oloss poor=0 good=0 verdict M
   [ "$(conf_get quality_alert)" != no ] || return 0
-  r=$(grep ' up ' "$log" | tail -n 5 | awk '{ n++; if ($3 != "-") { l += $3; ln++ } if ($4 != "-") { a += $4; an++ } if ($6 != "-") { j += $6; jn++ } if ($7 != "-") { o += $7; on++ } }
-       END { if (n < 5) { print "none"; exit } printf "%.1f %.0f %.0f %.1f\n", ln ? l/ln : 0, an ? a/an : 0, jn ? j/jn : 0, on ? o/on : -1 }')
+  pq_thresholds
+  M=$(pq_val poor_alert_min 5)
+  r=$(grep ' up ' "$log" | tail -n "$M" | awk -v M="$M" '{ n++; if ($3 != "-") { l += $3; ln++ } if ($4 != "-") { a += $4; an++ } if ($6 != "-") { j += $6; jn++ } if ($7 != "-") { o += $7; on++ } }
+       END { if (n < M) { print "none"; exit } printf "%.1f %.0f %.0f %.1f\n", ln ? l/ln : 0, an ? a/an : 0, jn ? j/jn : 0, on ? o/on : -1 }')
   [ "$r" != none ] || return 0
   read -r loss rtt jit oloss <<< "$r"
-  if awk -v l="$loss" -v a="$rtt" -v j="$jit" 'BEGIN { exit !(l >= 5 || a >= 400 || j >= 120) }'; then poor=1; fi
-  if awk -v l="$loss" -v a="$rtt" -v j="$jit" 'BEGIN { exit !(l < 1 && a < 150 && j < 40) }'; then good=1; fi
+  if awk -v l="$loss" -v a="$rtt" -v j="$jit" -v PL="$Q_PL" -v PR="$Q_PR" -v PJ="$Q_PJ" 'BEGIN { exit !(l >= PL || a >= PR || j >= PJ) }'; then poor=1; fi
+  if awk -v l="$loss" -v a="$rtt" -v j="$jit" -v GL="$Q_GL" -v GR="$Q_GR" -v GJ="$Q_GJ" 'BEGIN { exit !(l < GL && a < GR && j < GJ) }'; then good=1; fi
   if [ "$poor" = 1 ] && [ ! -f "$flag" ]; then
     if awk -v o="$oloss" 'BEGIN { exit !(o >= 2) }'; then verdict="The road outside the tunnel is bad too (loss ${oloss}%): the internet path or a filter, not the tunnel."
     elif awk -v o="$oloss" 'BEGIN { exit !(o >= 0) }'; then verdict="The road outside the tunnel is fine: the problem is inside the tunnel (IPsec, L2TP, MTU or the router load)."
     else verdict="The road outside the tunnel could not be measured."; fi
-    if notify_send "$name: connection quality is POOR for 5 minutes (lost packets ${loss}%, average delay ${rtt} ms, delay swing ${jit} ms). $verdict"; then :; fi
+    if notify_send "$name: connection quality is POOR for $M minutes (lost packets ${loss}%, average delay ${rtt} ms, delay swing ${jit} ms). $verdict"; then :; fi
     date +%s > "$flag"
     echo "$(date '+%F %T') $name quality poor: loss ${loss}% avg ${rtt} ms jitter ${jit} ms (alert attempted)" >> "$STATE_DIR/watch.log"
   elif [ "$good" = 1 ] && [ -f "$flag" ]; then
@@ -1538,7 +1632,63 @@ quality_alert() {
     echo "$(date '+%F %T') $name quality good again" >> "$STATE_DIR/watch.log"
   fi
 }
+# quality_reconnect NAME: when the tunnel was poor almost all the time (80% of the 5-minute blocks) during the last poor_reconnect_min minutes,
+# reconnect it once. Guards: only while it is up, only inside poor_window, not again before poor_cooldown_min, at most poor_max_day a day,
+# optionally not when the road outside is bad too (poor_outside = no). Off by default (poor_reconnect_min = 0).
+quality_reconnect() {
+  local name=$1 log="$STATE_DIR/quality/$1.log" rec="$STATE_DIR/quality/$1.recon" N cool maxd res b p oo now last cnt notify=1
+  N=$(pq_val poor_reconnect_min 0)
+  case "$N" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$((10#$N))" -gt 0 ] || return 0
+  N=$((10#$N))
+  [ -f "$log" ] || return 0
+  [ "$(tail -n1 "$log" | awk '{ print $2 }')" = up ] || return 0
+  pq_thresholds
+  res=$(tail -n "$N" "$log" | awk -v PL="$Q_PL" -v PR="$Q_PR" -v PJ="$Q_PJ" -v N="$N" '
+    { l[NR] = $0 }
+    END {
+      if (NR < N * 0.9) { print "short"; exit }
+      for (i = NR; i >= 5; i -= 5) {
+        ups = 0; sl = sa = sj = 0; ln = an = jn = 0
+        for (k = i - 4; k <= i; k++) { split(l[k], f, " "); if (f[2] == "up") { ups++
+          if (f[3] != "-") { sl += f[3]; ln++ } if (f[4] != "-") { sa += f[4]; an++ } if (f[6] != "-") { sj += f[6]; jn++ }
+          if (f[7] != "-") { so += f[7]; on++ } } }
+        b++
+        if (ups >= 3 && ((ln && sl / ln >= PL) || (an && sa / an >= PR) || (jn && sj / jn >= PJ))) p++
+      }
+      if (b < 3) { print "short"; exit }
+      printf "%d %d %.1f\n", b, p, on ? so / on : -1 }')
+  [ "$res" != short ] && [ -n "$res" ] || return 0
+  read -r b p oo <<< "$res"
+  [ "$((p * 100))" -ge "$((b * 80))" ] || return 0
+  if [ "$(pq_val poor_outside yes)" = no ] && awk -v o="$oo" 'BEGIN { exit !(o >= 2) }'; then return 0; fi
+  pq_in_window "$(pq_val poor_window "")" || return 0
+  now=$(date +%s)
+  cool=$(pq_val poor_cooldown_min "$N"); case "$cool" in ''|*[!0-9]*) cool=$N ;; esac
+  maxd=$(pq_val poor_max_day 4); case "$maxd" in ''|*[!0-9]*) maxd=4 ;; esac
+  [ -f "$rec" ] || : > "$rec"
+  awk -v n="$now" '$1 > n - 86400' "$rec" > "$rec.tmp" && mv "$rec.tmp" "$rec"
+  last=$(tail -n1 "$rec"); cnt=$(grep -c . "$rec" || true)
+  if [ -n "$last" ] && [ "$((now - last))" -lt "$((cool * 60))" ]; then return 0; fi
+  [ "$(conf_get quality_alert)" != no ] || notify=0
+  if [ "$cnt" -ge "$maxd" ]; then
+    if [ "$(cat "$STATE_DIR/quality/$name.capmsg" 2>/dev/null)" != "$(date +%F)" ]; then
+      date +%F > "$STATE_DIR/quality/$name.capmsg"
+      echo "$(date '+%F %T') $name still poor, automatic reconnect limit reached ($maxd in 24 h)" >> "$STATE_DIR/watch.log"
+      [ "$notify" = 0 ] || notify_send "$name: still poor, but the automatic reconnects ($maxd in 24 hours) did not help. The problem is probably not fixed by reconnecting." || true
+    fi
+    return 0
+  fi
+  echo "$now" >> "$rec"
+  if [ "$S_MODE" = server ]; then setsid "$0" disconnect "$name" >/dev/null 2>&1 < /dev/null &
+  else setsid "$0" reconnect "$name" >/dev/null 2>&1 < /dev/null &
+  fi
+  echo "$(date '+%F %T') $name poor for $N minutes: reconnected automatically ($((cnt + 1)) of $maxd in 24 h)" >> "$STATE_DIR/watch.log"
+  printf '{"t": %s, "k": "warn", "m": "%s"}\n' "$now" "Connection $name was poor for $N minutes: reconnected automatically ($((cnt + 1)) of $maxd in 24 hours)" >> "$STATE_DIR/events.log" 2>/dev/null || true
+  [ "$notify" = 0 ] || notify_send "$name: quality was poor for $N minutes - reconnected automatically ($((cnt + 1)) of $maxd in 24 hours)." || true
+}
 quality_alert_cb() { [ "$S_DISABLED" != yes ] || return 0; quality_alert "$S_NAME"; }
+quality_reconnect_cb() { [ "$S_DISABLED" != yes ] || return 0; quality_reconnect "$S_NAME"; }
 cmd_quality_sample() {
   need_root
   [ -f "$SITES" ] || return 0
@@ -1555,9 +1705,10 @@ cmd_quality_sample() {
     [ -f "$f" ] || continue
     if [ "$(wc -l < "$f")" -gt 10200 ]; then tail -n 10080 "$f" > "$f.tmp" && mv "$f.tmp" "$f"; fi
     n=$(basename "$f" .log)
-    grep -q "^\[$n\]" "$SITES" 2>/dev/null || rm -f "$f" "$STATE_DIR/quality/$n.alert"      # a deleted site takes its history with it
+    grep -q "^\[$n\]" "$SITES" 2>/dev/null || rm -f "$f" "$STATE_DIR/quality/$n.alert" "$STATE_DIR/quality/$n.recon" "$STATE_DIR/quality/$n.capmsg"      # a deleted site takes its history with it
   done
   for_each_site quality_alert_cb
+  for_each_site quality_reconnect_cb
 }
 
 cmd_check() {
@@ -1575,6 +1726,27 @@ cmd_check() {
     chk OK "internet NAT rule present"
   else
     chk FAIL "no MASQUERADE rule in POSTROUTING (run: l2tp-gw setup)"
+  fi
+  local fw_mangle fw_all
+  fw_mangle=$(iptables -t mangle -S FORWARD 2>/dev/null || true)
+  if grep -q 'clamp-mss-to-pmtu' <<< "$fw_mangle"; then
+    chk OK "TCP size fix for forwarded traffic is on (MSS clamp to the path MTU)"
+  else
+    chk WARN "TCP size fix (MSS clamp to the path MTU) is missing (run: l2tp-gw setup)"
+  fi
+  if iptables -t mangle -S L2TPGW-MSS >/dev/null 2>&1; then
+    local mss_rules mss_pk
+    mss_rules=$(iptables -t mangle -S L2TPGW-MSS 2>/dev/null | grep -c -- '--set-mss' || true)
+    mss_pk=$(iptables -t mangle -L L2TPGW-MSS -v -n -x 2>/dev/null | awk 'NR > 2 { s += $1 } END { print s + 0 }')
+    chk OK "TCP size fix per tunnel, both directions: $mss_rules rules, ${mss_pk} connection starts looked at"
+  else
+    chk WARN "TCP size fix per tunnel is not set yet (run: l2tp-gw mss-apply)"
+  fi
+  fw_all=$(iptables -S 2>/dev/null || true)
+  if grep -- '-p icmp' <<< "$fw_all" | grep -E -- '-j (DROP|REJECT)' | grep -qvE 'echo-request|icmp-type 8'; then
+    chk WARN "a firewall rule drops ICMP - the message 'packet too big' may get lost and big packets then stall (check: iptables -S | grep icmp)"
+  else
+    chk OK "ICMP 'packet too big' messages are not blocked on this server"
   fi
   if systemctl is-active --quiet l2tp-gw-collect 2>/dev/null; then
     chk OK "traffic collector is running"
@@ -1924,6 +2096,7 @@ cmd_watch() {
   WATCH_IPSEC_OK=1
   WATCH_IPSEC=$(ipsec status 2>/dev/null) || WATCH_IPSEC_OK=0
   for_each_site watch_site
+  QUIET=1 "$0" mss-apply >/dev/null 2>&1 || true
   QUIET=1 timeout 45 "$0" quality-sample >/dev/null 2>&1 || true
   if [ ! -f "$STATE_DIR/mtu-status" ] || [ $(( $(date +%s) - $(stat -c %Y "$STATE_DIR/mtu-status" 2>/dev/null || echo 0) )) -ge 300 ]; then
     QUIET=1 timeout 60 "$0" mtu-verify >/dev/null 2>&1 || true
@@ -2004,6 +2177,7 @@ main() {
     routes-sync) cmd_routes_sync "${2:-}" "${3:-up}" ;;
     mtu-test)    cmd_mtu_test "${2:-}" "${3:-}" ;;
     mtu-apply)   cmd_mtu_apply "${2:-}" ;;
+    mss-apply)   need_root; cmd_mss_apply ;;
     mtu-verify)  cmd_mtu_verify "${2:-}" ;;
     quality-sample) cmd_quality_sample "${2:-}" ;;
     site-sync) cmd_site_sync ;;

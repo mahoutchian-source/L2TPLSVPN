@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 CONF_DIR = os.environ.get("CONF_DIR", "/etc/l2tp-gw")
 SITES = os.path.join(CONF_DIR, "sites.conf")
 WEB_CONF = os.path.join(CONF_DIR, "web.conf")
@@ -23,7 +23,8 @@ GW = os.environ.get("L2TP_GW", "/usr/local/bin/l2tp-gw")
 UNIT = os.environ.get("UNIT_FILE", "/etc/systemd/system/l2tp-gw-web.service")
 KEYS = ["host", "psk", "user", "pass", "mppe", "nat", "routes", "reconnect_every", "reconnect_at", "reconnect_window",
         "quota_gb", "quota_period", "quota_dir", "quota_warn", "ipsec_mode", "mode", "ip", "disabled",
-        "access_internet", "access_clients", "access_sites", "lcp_echo", "mtu"]    # (access_*: "no" = blocked; empty = allowed, not written)
+        "access_internet", "access_clients", "access_sites", "lcp_echo", "mtu",
+        "poor_loss", "poor_rtt", "poor_jitter", "poor_alert_min", "poor_reconnect_min", "poor_cooldown_min", "poor_max_day", "poor_window", "poor_outside"]    # (access_*: "no" = blocked; empty = allowed, not written)
 OPTIONAL = set(KEYS[6:])      # written only when not empty
 SERVER_SKIP = ("host", "psk", "mppe")    # a dial-in (mode = server) site has no address to dial and uses the shared IPsec secret
 DIALIN_CONF = os.path.join(CONF_DIR, "dialin.conf")
@@ -2081,7 +2082,7 @@ def site_rows(ppp, ipsec):
             tags += "<span class='chip tag'>MPPE</span>"
         if ipmode != "heal":
             tags += "<span class='chip tag'>IPsec: %s</span>" % e(ipmode)
-        tags += mtu_chip(s, MS) + q_chip(n)
+        tags += mtu_chip(s, MS) + q_chip(n, s)
         for k, label in (("internet", "no internet"), ("sites", "no other sites"), ("clients", "no dial-in clients")):
             if s.get("access_" + k) == "no":
                 tags += "<span class='chip tag'>%s</span>" % label
@@ -2168,7 +2169,7 @@ def edit_page(sid, name=None, msg=None, vals=None):
                 + "<fieldset><legend>Packet size (MTU)</legend>"
                 "<label for=mtu>MTU of this tunnel<span class=hint>576 to 1500. Empty = 1280. A new value is used the next time the tunnel connects. "
                 "Use the Measure MTU page to find the right value.</span></label>"
-                "<input type=text id=mtu name=mtu value='" + e(s.get("mtu", "")) + "' class=mono placeholder='1280'></fieldset>")
+                "<input type=text id=mtu name=mtu value='" + e(s.get("mtu", "")) + "' class=mono placeholder='1280'></fieldset>" + pq_fieldset(s))
     keep = "Leave empty to keep the current one." if editing else ""
     ph = " placeholder='unchanged'" if editing else ""
     body = ("<div class=bar><h1>%s</h1></div>"
@@ -2339,7 +2340,7 @@ def dialin_list_html(sid):
         for k, label in (("internet", "no internet"), ("clients", "no other clients"), ("sites", "no outgoing sites")):
             if s.get("access_" + k) == "no":
                 tags += "<span class='chip tag'>%s</span>" % label
-        tags += mtu_chip(s, MS, True) + q_chip(n)
+        tags += mtu_chip(s, MS, True) + q_chip(n, s)
         rows += ("<div class=row><div class='rail %s'></div>"
                  "<div><div class=name>%s</div><div class='host mono'>%s &middot; %s</div></div>"
                  "<div><div class='state %s'>%s</div><div class='addr mono'>%s</div>%s</div>"
@@ -2430,7 +2431,7 @@ def dialin_edit_page(sid, name=None, msg=None, vals=None):
                 + "<fieldset><legend>Packet size (MTU)</legend>"
                 "<label for=mtu>MTU of this client<span class=hint>576 to 1500. Empty = 1280. Applied to the live connection at once. "
                 "Use the Measure MTU page to find the right value.</span></label>"
-                "<input type=text id=mtu name=mtu value='" + e(s.get("mtu", "")) + "' class=mono placeholder='1280'></fieldset>")
+                "<input type=text id=mtu name=mtu value='" + e(s.get("mtu", "")) + "' class=mono placeholder='1280'></fieldset>" + pq_fieldset(s))
     body = ("<div class=bar><h1>%s</h1></div>"
             "<form class=form method=post action=/dialin/save autocomplete=off>"
             "<input type=hidden name=csrf value='%s'><input type=hidden name=orig value='%s'>"
@@ -3441,8 +3442,112 @@ def q_stats(rows, secs, now=None):
             "down_avg": q_avg(down_bps), "down_peak": q_max(down_bps), "up_avg": q_avg(up_bps), "up_peak": q_max(up_bps)}
 
 
-def q_grade(st):
+# ---------- quality limits: per connection (in sites.conf) with defaults (quality.conf, edited on the Settings page) ----------
+QUALITY_CONF = os.path.join(CONF_DIR, "quality.conf")
+PQ_KEYS = ["poor_loss", "poor_rtt", "poor_jitter", "poor_alert_min", "poor_reconnect_min", "poor_cooldown_min", "poor_max_day", "poor_window", "poor_outside"]
+PQ_BUILTIN = {"poor_loss": "5", "poor_rtt": "400", "poor_jitter": "120", "poor_alert_min": "5", "poor_reconnect_min": "0",
+              "poor_cooldown_min": "", "poor_max_day": "4", "poor_window": "", "poor_outside": "yes"}
+
+
+def read_qdefaults():
+    c = {}
+    try:
+        for line in open(QUALITY_CONF):
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, v = line.split("=", 1)
+                if k.strip() in PQ_KEYS and v.strip():
+                    c[k.strip()] = v.strip()
+    except OSError:
+        pass
+    return c
+
+
+def write_qdefaults(d):
+    os.makedirs(CONF_DIR, exist_ok=True)
+    tmp = QUALITY_CONF + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("# Defaults for the quality limits of every connection (a connection can override each one).\n")
+        for k in PQ_KEYS:
+            if d.get(k):
+                f.write("%s = %s\n" % (k, d[k]))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, QUALITY_CONF)
+
+
+def check_pq(d):
+    """error text or None (same rules as validate_quality_settings in l2tp-gw)"""
+    def num(k, lo, hi, what, dec=False):
+        v = d.get(k, "")
+        if not v:
+            return None
+        if not re.fullmatch(r"\d+(\.\d+)?" if dec else r"\d{1,6}", v) or not (lo <= float(v) <= hi):
+            return "%s must be a number from %s to %s" % (what, lo, hi)
+    for err in (num("poor_loss", 0.5, 100, "Poor loss (%)", True), num("poor_rtt", 20, 60000, "Poor delay (ms)"), num("poor_jitter", 5, 60000, "Poor delay swing (ms)"),
+                num("poor_alert_min", 1, 1440, "Minutes before the alert"), num("poor_cooldown_min", 10, 10080, "Minutes between reconnects"),
+                num("poor_max_day", 1, 48, "Reconnects per day")):
+        if err:
+            return err
+    v = d.get("poor_reconnect_min", "")
+    if v and not (re.fullmatch(r"\d{1,5}", v) and (int(v) == 0 or 10 <= int(v) <= 10080)):
+        return "Automatic reconnect minutes must be 0 (off) or from 10 to 10080"
+    if d.get("poor_window") and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d", d["poor_window"]):
+        return "The time window must look like 03:00-07:00"
+    if d.get("poor_outside") not in (None, "", "yes", "no"):
+        return "The outside-road choice must be yes or no"
+    return None
+
+
+def q_th(site=None):
+    """(fair, poor) limits of one connection: its own value, else the default from Settings, else the built-in one. Fair starts at about a third of poor."""
+    d = read_qdefaults()
+    def val(k):
+        return (site or {}).get(k) or d.get(k) or PQ_BUILTIN[k]
+    try:
+        poor = {"loss": float(val("poor_loss")), "rtt": float(val("poor_rtt")), "jit": float(val("poor_jitter"))}
+    except ValueError:
+        poor = {"loss": 5.0, "rtt": 400.0, "jit": 120.0}
+    return {"loss": poor["loss"] * 0.2, "rtt": poor["rtt"] * 0.375, "jit": poor["jit"] / 3.0}, poor
+
+
+def pq_fieldset(s, settings_page=False):
+    """the inputs for the quality limits: on a connection form (blank = use the default) or on the Settings page (the defaults themselves)"""
+    e = html.escape
+    d = read_qdefaults()
+    pre = "q_" if settings_page else ""
+    cur = (lambda k: d.get(k, "")) if settings_page else (lambda k: s.get(k, ""))
+    def eff(k):
+        return d.get(k) or PQ_BUILTIN[k]
+    def ph(k, shown=None):
+        return e(shown if shown is not None else eff(k))
+    def inp(k, title, hint, shown=None):
+        return ("<label for=%s%s>%s<span class=hint>%s</span></label><input type=text id=%s%s name=%s%s value='%s' class=mono placeholder='%s'>"
+                % (pre, k, title, hint, pre, k, pre, k, e(cur(k)), ph(k, shown)))
+    outsel = ""
+    opts = [("yes", "Yes"), ("no", "No")]
+    sel = cur("poor_outside")
+    if not settings_page:
+        opts = [("", "Use the default (%s)" % ("Yes" if eff("poor_outside") == "yes" else "No"))] + opts
+    outsel = ("<label for=%spoor_outside>Reconnect also when the road outside the tunnel is bad too</label><select id=%spoor_outside name=%spoor_outside>%s</select>"
+              % (pre, pre, pre, "".join("<option value='%s'%s>%s</option>" % (v, " selected" if (sel or ("yes" if settings_page else "")) == v else "", t) for v, t in opts)))
+    intro = ("<p class=hint>%s</p>" % ("These are the limits for every connection that has no value of its own. Fair starts at about a third of poor."
+                                         if settings_page else
+                                         "Leave a box empty to use the default from Settings (shown in grey). A link that may lose many pings can have a higher limit; "
+                                         "a very sensitive one a lower limit."))
+    return ("<fieldset><legend>Quality limits and automatic reconnect</legend>" + intro +
+            "<div class=two><div>" + inp("poor_loss", "Poor from this loss (%)", "Share of lost pings") + "</div>"
+            "<div>" + inp("poor_rtt", "Poor from this average delay (ms)", "Average of the last 5 minutes") + "</div></div>"
+            "<div class=two><div>" + inp("poor_jitter", "Poor from this delay swing (ms)", "How much the delay jumps") + "</div>"
+            "<div>" + inp("poor_alert_min", "Telegram after this many minutes of poor", "Minutes") + "</div></div>"
+            "<div class=two><div>" + inp("poor_reconnect_min", "Reconnect after this many minutes of poor", "0 = never. Poor almost all the time (80%) in this period", ) + "</div>"
+            "<div>" + inp("poor_cooldown_min", "Wait this long between two reconnects (minutes)", "Empty = the same as the minutes above", shown="") + "</div></div>"
+            "<div class=two><div>" + inp("poor_max_day", "Most reconnects in 24 hours", "Then it only tells you") + "</div>"
+            "<div>" + inp("poor_window", "Only inside this time window", "Example 03:00-07:00, empty = any time", shown="03:00-07:00") + "</div></div>"
+            + outsel + "</fieldset>")
+
+
+def q_grade(st, th=None):
     """-> (class, word, reasons). class: ok / warn / bad / none"""
+    fair, poor = th if th else (Q_FAIR, Q_POOR)
     if st["n_up"] < 3:
         return "none", "No data yet", []
     level, why = 0, []
@@ -3450,10 +3555,10 @@ def q_grade(st):
         v = st[key]
         if v is None:
             continue
-        if v >= Q_POOR[key]:
-            level = max(level, 2); why.append("%s %.0f%s (poor from %.0f%s)" % (label, v, unit, Q_POOR[key], unit))
-        elif v >= Q_FAIR[key]:
-            level = max(level, 1); why.append("%s %.0f%s (fair from %.0f%s)" % (label, v, unit, Q_FAIR[key], unit))
+        if v >= poor[key]:
+            level = max(level, 2); why.append("%s %.0f%s (poor from %.0f%s)" % (label, v, unit, poor[key], unit))
+        elif v >= fair[key]:
+            level = max(level, 1); why.append("%s %.0f%s (fair from %.0f%s)" % (label, v, unit, fair[key], unit))
     if st["loss"] is None and st["rtt"] is None:
         return "none", "No answer to ping", ["The far end does not answer ping, so the quality cannot be measured."]
     return ("ok", "Good", why) if level == 0 else (("warn", "Fair", why) if level == 1 else ("bad", "Poor", why))
@@ -3607,10 +3712,10 @@ def q_spark(rows, secs=3600):
     return ("<svg class=qspark viewBox='0 0 100 24' preserveAspectRatio=none><polyline points='%s'/></svg>" % " ".join(pts)) if len(pts) > 1 else ""
 
 
-def q_chip(name):
+def q_chip(name, site=None):
     """small chip for the Sites / Dial-in lists: the grade of the last 5 minutes, a link to the connection page"""
     st = q_stats(q_read(name), 300)
-    cls, word, _ = q_grade(st)
+    cls, word, _ = q_grade(st, q_th(site))
     if cls == "none":
         return ""
     c = {"ok": "mtuok", "warn": "mtubad", "bad": "mtured"}[cls]
@@ -3702,7 +3807,7 @@ def quality_page(sid, msg=None, recheck=False):
         n = s["name"]
         rows = q_read(n)
         st5, st1h = q_stats(rows, 300, now), q_stats(rows, 3600, now)
-        cls, word, _ = q_grade(st5)
+        cls, word, _ = q_grade(st5, q_th(s))
         cnt[cls] += 1
         ses = q_sessions(rows, now)
         if ses["since"]:
@@ -3761,7 +3866,7 @@ def conn_page(sid, name, win="6h", msg=None, recheck=False):
     up = name in ppp and not off
     ipsec_up = bool(re.search(r"(^|\s)%s(\[\d+\]: ESTABLISHED|\{\d+\}:\s+INSTALLED)" % re.escape(name), ipsec or ""))
     st5 = q_stats(rows, 300, now)
-    cls, word, why = q_grade(st5)
+    cls, word, why = q_grade(st5, q_th(s))
     diag = q_diag(st5, cls)
     ses = q_sessions(rows, now)
     # --- header
@@ -3778,7 +3883,7 @@ def conn_page(sid, name, win="6h", msg=None, recheck=False):
     trs = ""
     for label, secs in (("5 minutes", 300), ("1 hour", 3600), ("24 hours", 86400), ("7 days", 604800)):
         t = q_stats(rows, secs, now)
-        g = q_grade(t)[0]
+        g = q_grade(t, q_th(s))[0]
         trs += ("<tr><th>%s</th><td><span class='dot %s'></span></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
                 % (label, g, q_num(t["loss"], "%", 1), q_num(t["rtt"], " ms"), q_num(t["rtt_max"], " ms"),
                    q_num(t["jit"], " ms"), q_num(t["oloss"], "%", 1) if t["oloss"] is not None else "-",
@@ -3822,7 +3927,9 @@ def conn_page(sid, name, win="6h", msg=None, recheck=False):
                 ("IPsec ciphers", " / ".join(x for x in (ii.get("ike"), ii.get("esp")) if x) or "-"),
                 ("IPsec rule", s.get("ipsec_mode") or "heal") if not server else ("PPP login", "user %s" % s.get("user", "?")),
                 ("Interface", dev or "-"), ("Address", ppp.get(name, "-").replace(" peer ", " to ")),
-                ("MTU set / link now", "%s / %s" % (s.get("mtu") or "1280 (default)", cur or "-"))]
+                ("MTU set / link now", "%s / %s" % (s.get("mtu") or "1280 (default)", cur or "-")),
+                ("TCP segment size (MSS)", ("%d bytes (link MTU - 40), cut by the server both ways" % (int(cur) - 40)) if cur.isdigit() else "-"),
+                ("Biggest UDP packet that passes whole", ("%d bytes (link MTU - 28); bigger ones are split" % (int(cur) - 28)) if cur.isdigit() else "-")]
     sec = "".join("<div class=qkv><span>%s</span><b>%s</b></div>" % (e(k), e(v)) for k, v in sec_rows)
     link = ("<div class=card><h2>Security and link</h2>%s<div class=qkv><span>Packet size check</span><b>%s</b></div><p class=hint>%s</p>"
             "<div class=qkv><span>Routes</span><b>%s</b></div></div>"
@@ -3847,11 +3954,39 @@ def conn_page(sid, name, win="6h", msg=None, recheck=False):
         pass
     evh = ("<div class=card><h2>Recent events of this connection</h2>%s</div>"
            % ("<pre class=evlog>%s</pre>" % e("\n".join(ev[-12:])) if ev else "<p class=hint>Nothing noted for this connection in the watcher log.</p>"))
+    fair_, poor_ = q_th(s)
+    qd_ = read_qdefaults()
+    def ev(k):
+        return s.get(k) or qd_.get(k) or PQ_BUILTIN[k]
+    own = any(s.get(k) for k in PQ_KEYS)
+    rmin = ev("poor_reconnect_min")
+    try:
+        recs = [int(x) for x in open(os.path.join(QUALITY_DIR, name + ".recon")).read().split() if int(x) >= now - 86400]
+    except (OSError, ValueError):
+        recs = []
+    if rmin.isdigit() and int(rmin) > 0:
+        rtxt = ("after %s min of poor, at most %s a day, at least %s min apart%s%s"
+                % (rmin, ev("poor_max_day"), ev("poor_cooldown_min") or rmin, (", only %s" % ev("poor_window")) if ev("poor_window") else "",
+                   "" if ev("poor_outside") == "yes" else ", not when the road outside is bad"))
+    else:
+        rtxt = "off"
+    rcard = ("<div class=card><h2>Quality rules <a class='btn sm' href='/%s' style='float:right'>Change</a></h2>"
+             "<div class=qkv><span>Poor from</span><b>%s</b></div><div class=qkv><span>Fair from</span><b>%s</b></div>"
+             "<div class=qkv><span>Telegram after</span><b>%s min of poor</b></div>"
+             "<div class=qkv><span>Automatic reconnect</span><b>%s</b></div>"
+             "<div class=qkv><span>Automatic reconnects in 24 hours</span><b>%d%s</b></div>"
+             "<p class=hint>%s</p></div>"
+             % (("dialin/edit?name=" if server else "edit?name=") + e(name),
+                e("%g%% lost, %g ms delay, %g ms swing" % (poor_["loss"], poor_["rtt"], poor_["jit"])),
+                e("%g%% lost, %g ms delay, %g ms swing" % (fair_["loss"], fair_["rtt"], fair_["jit"])),
+                e(ev("poor_alert_min")), e(rtxt), len(recs),
+                (" (last " + time.strftime("%d %b %H:%M", time.gmtime(max(recs))) + " UTC)") if recs else "",
+                "This connection has its own limits." if own else "These are the defaults from Settings; a connection can have its own."))
     tcard = t_card(name, read_general()["unit"])
     hitems = health_split(health_lines(recheck), [name])[0].get(name, [])
     hcard = ("<div class=card><h2>Health check <a class='btn sm' href='/conn?name=%s&w=%s&recheck=1' style='float:right'>Check again</a></h2>%s</div>"
              % (e(name), win, health_rows(hitems) or "<p class=hint>No health lines for this connection (it may be switched off or new).</p>"))
-    body = head + verdict + "<div class=cgrid>" + charts + table + link + hist + hcard + tcard + "</div>" + evh
+    body = head + verdict + "<div class=cgrid>" + charts + table + link + hist + hcard + tcard + rcard + "</div>" + evh
     return page("Connection " + name, body, sid, msg, "/quality")
 
 
@@ -3960,6 +4095,7 @@ def settings_page(sid, msg=None, vals=None):
             "<label class=chk><input type=checkbox name=tg_send_config value=yes%s> Send the settings file to Telegram every time it changes</label>"
             "<span class=hint>Needs the bot above. The file contains ALL passwords and the IPsec secret, and Telegram is not end-to-end encrypted: "
             "use a private chat that only you can read. One message is sent after you stop editing for a minute.</span></fieldset>"
+            "%s"
             "<fieldset><legend>DNS cache</legend>"
             "<label for=dnsf>Empty the DNS cache every (minutes)<span class=hint>So a site whose address name (DDNS) got a new IP is found again. 0 = never. Default 30.</span></label>"
             "<input type=text id=dnsf name=dns_flush_min value='%s' class=mono></fieldset>"
@@ -3968,7 +4104,7 @@ def settings_page(sid, msg=None, vals=None):
             "<p>Sends one test message with the saved settings.</p><button class=btn>Send test message</button></form>"
             % (e(csrf_of(sid)), "A token is saved. Leave empty to keep it." if c["telegram_token"] else "No token saved.",
                "unchanged" if c["telegram_token"] else "", e(c["telegram_chat"]), e(c["down_after_min"]), e(c["server_name"]),
-               " checked" if c["quality_alert"] == "yes" else "", " checked" if c["tg_send_config"] == "yes" else "", e(c["dns_flush_min"]), e(csrf_of(sid))))
+               " checked" if c["quality_alert"] == "yes" else "", " checked" if c["tg_send_config"] == "yes" else "", pq_fieldset({}, True), e(c["dns_flush_min"]), e(csrf_of(sid))))
     g = read_general()
     known = [v for v, _ in TZ_CHOICES]
     tzopts = options(TZ_CHOICES + [("__custom__", "Other (type below)")], g["timezone"] if g["timezone"] in known else "__custom__")
@@ -4633,8 +4769,11 @@ class H(http.server.BaseHTTPRequestHandler):
                    "quality_alert": "yes" if f.get("quality_alert") == "yes" else "no",
                    "tg_send_config": "yes" if f.get("tg_send_config") == "yes" else "no"}
             err = check_notify(new)
+            qd = {k: f.get("q_" + k, "").strip() for k in PQ_KEYS}
+            err = err or check_pq(qd)
             if err:
                 return self.send(200, settings_page(sid, (False, err), dict(new, telegram_token=c["telegram_token"])))
+            write_qdefaults(qd)
             write_notify(new)
             FLASH[sid] = (True, "Alert settings saved.")
             return self.redirect("/settings")
@@ -4774,7 +4913,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def dialin_save(self, sid, f):
         new = {"name": f.get("name", "").strip(), "mode": "server"}
-        for k in ("user", "pass", "ip", "routes", "mtu", "quota_gb", "quota_period", "quota_dir", "quota_warn"):
+        for k in ("user", "pass", "ip", "routes", "mtu", "quota_gb", "quota_period", "quota_dir", "quota_warn") + tuple(PQ_KEYS):
             new[k] = f.get(k, "").strip()
         new["nat"] = "yes" if f.get("nat") else "no"
         for k in ("internet", "clients", "sites"):       # ticked = allowed (empty, not written), un-ticked = "no"
@@ -4874,7 +5013,7 @@ class H(http.server.BaseHTTPRequestHandler):
         new["nat"] = "yes" if f.get("nat") else "no"
         for k in ("internet", "sites", "clients"):       # ticked = allowed (empty, not written), un-ticked = "no"
             new["access_" + k] = "" if f.get("acc_" + k) else "no"
-        for k in ("reconnect_every", "reconnect_at", "reconnect_window", "quota_gb", "quota_period", "quota_dir", "quota_warn"):
+        for k in ("reconnect_every", "reconnect_at", "reconnect_window", "quota_gb", "quota_period", "quota_dir", "quota_warn") + tuple(PQ_KEYS):
             new[k] = f.get(k, "").strip()
         new["ipsec_mode"] = f.get("ipsec_mode", "heal").strip()
         if new["ipsec_mode"] == "heal":               # the default is not written to the file
