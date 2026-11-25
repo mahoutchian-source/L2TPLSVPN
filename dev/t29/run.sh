@@ -82,6 +82,16 @@ post -d name=cl -d orig=cl -d host=9.9.9.9 -d user=cu -d routes= -d mtu=1330 $B/
 ok "saving the edit form stores the new mtu" "grep -q '^mtu = 1330' c/sites.conf"
 post -d name=hm -d orig=hm -d user=hmuser -d pass=hmpassword1 -d ip=10.99.99.2 -d mtu=1360 -d acc_internet=yes -d acc_clients=yes -d acc_sites=yes $B/dialin/save -o /dev/null
 ok "dial-in save stores the client's mtu" "grep -A8 '^\\[hm\\]' c/sites.conf | grep -q '^mtu = 1360'"
+get $B/ > dash.html
+ok "dashboard has the network map and the health donut" "grep -q 'class=netmap' dash.html && grep -q 'class=donut' dash.html && grep -q 'id=totchart' dash.html"
+ok "map: tunnel up without IPsec is drawn red, dial-in client not connected is grey" "grep -q \"class='ln noipsec'\" dash.html && grep -q \"class='ln wait'\" dash.html"
+get $B/sites | grep -q "data-spark='cl'" && echo "PASS connected site has a sparkline slot" || echo "FAIL connected site has a sparkline slot"
+python3 - <<'PY' > page.js
+import re,sys
+s=open('../build/l2tp-gw-web').read(); i=s.index('JS = \"\"\"'); j=s.index('\n\"\"\"',i)
+print(eval('\"\"\"'+s[i+8:j]+'\n\"\"\"'))
+PY
+if command -v node >/dev/null; then node --check page.js 2>/dev/null && echo "PASS page script has no syntax error" || echo "FAIL page script has no syntax error"; else echo "SKIP no node"; fi
 kill $W
 for i in ppp-cl ppp3; do ip link del $i 2>/dev/null; done
 echo DONE
