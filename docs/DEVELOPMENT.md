@@ -47,6 +47,7 @@ Rule: the web never edits system config itself; it edits `/etc/l2tp-gw/*` and ca
     cd dev/t27 && bash run.sh   # 1.0.0 features (password, DNS flush, events paging, config to Telegram)
     cd dev/t28 && bash run.sh   # 1.0.1 features (require firewall, PPP keep-alive, IPsec re-check, multipath status, duplicate networks, Persian password); needs `ip` (apt install iproute2)
     cd dev/t29 && bash run.sh   # 1.0.3 MTU (per-connection mtu, mtu-apply, mtu-test with a ping stub, panel page); needs `ip`
+    cd dev/t30 && bash shots.sh   # screenshots of Dashboard and Sites (dark + light) with fake traffic; needs playwright and chromium
     cd dev/t26 && bash shots.sh # screenshots (needs playwright/chromium)
 
 Kill leftover test servers first: `pkill -f l2tp-gw-web` (they use port 18082 and give wrong results if left running).
