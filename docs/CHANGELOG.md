@@ -13,6 +13,7 @@ Tunnel stability and honesty about encryption. Backup of 1.0.0 kept (`l2tp-gw-1.
 - **Bug fix: a password with non-ASCII characters (e.g. Persian) caused a server error** at login and in Settings > Panel password (`compare_digest` accepts only ASCII text). Now compared as bytes. (web: `same_secret`)
 - **`l2tp-gw status` lists multipath routes** under every tunnel that is one of their next hops (they were hidden before). (gw: `cmd_status`)
 - **`check` warns when two active dial-in clients have the same network and the same distance** (traffic is split between them; usually a typo like 248 instead of 242). (gw: `check_dup_routes`)
+- **One-command install from GitHub** (`install.sh` in the repository root): downloads the newest files, checks both programs for syntax errors and the versions for equality, builds the single-file installer and runs it; nothing is changed if a check fails. Options `--restore FILE`, `--no-setup`, `--no-web` are passed on. Test settings: `L2TPGW_SRC`, `L2TPGW_URL`.
 - **Installer fix:** the checksum list no longer includes itself (it could make the installer stop with "Checksum failed" depending on timing). (dev: `make-installer.sh`)
 - Tests: new `dev/t28/run.sh` (20 checks); t20 firewall check updated for the new chain.
 

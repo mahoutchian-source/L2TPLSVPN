@@ -37,7 +37,8 @@ Rule: the web never edits system config itself; it edits `/etc/l2tp-gw/*` and ca
 ## Test
 
 `dev/` holds the sandbox tests (stub programs for ipsec/iptables/systemctl, fake /proc, a netns lab). Layout matters:
-`dev/build` is a link to `bin/`.
+`dev/build` is a link to `bin/`. Files uploaded through the GitHub web page lose the executable bit and the link: after a fresh clone/download run
+`chmod +x bin/* dev/t*/bin/* && ln -sfn ../bin dev/build` before the tests (the installers do not need this).
 
     cd dev && bash allt.sh            # most suites, output in allt.out (expect 1 known FAIL in t20: nothing listens on UDP 1701 in a sandbox)
     cd dev/t11 && python3 test_collector.py    # 41 checks
