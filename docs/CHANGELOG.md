@@ -3,6 +3,9 @@
 Newest first. Rule: every change adds a line here (what, why, where in the code) and bumps VERSION in
 `bin/l2tp-gw` AND `bin/l2tp-gw-web`. Bugs found and their fixes go to KNOWN-ISSUES.md.
 
+## 1.0.2 (2026-11-24)
+- **Bug fix (my mistake in 1.0.1): the Sites page and `l2tp-gw status` became thousands of lines long and froze the browser.** 1.0.1 listed every multipath route under every tunnel, and the route manager (country lists, proto 98) creates thousands of them. Now `status` shows a multipath route once, in ONE line (`172.17.192.0/22 metric 2 via ppp-a, ppp-b`) under each of its tunnels, and routes of the route manager only as a count ("N routes of the route manager ... see the Routes page"). The routing table is also read once instead of once per tunnel. (gw: `cmd_status`; test t28 now builds 200 such routes and checks the output stays under 60 lines)
+
 ## 1.0.1 (2026-11-24)
 Tunnel stability and honesty about encryption. Backup of 1.0.0 kept (`l2tp-gw-1.0.0-backup-*.tar.gz`).
 - **`ipsec_mode = require` now really blocks plain L2TP:** UDP 1701 from the router's address is dropped unless it arrived inside IPsec (iptables chain `L2TPGW-REQ`, rebuilt on every apply, empty when no site uses `require`). `heal` and `allow` sites are never touched. `check` reports the rule. (gw: `apply_require_fw`, `check_site`)
