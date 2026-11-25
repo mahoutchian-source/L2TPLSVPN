@@ -3,6 +3,14 @@
 Newest first. Rule: every change adds a line here (what, why, where in the code) and bumps VERSION in
 `bin/l2tp-gw` AND `bin/l2tp-gw-web`. Bugs found and their fixes go to KNOWN-ISSUES.md.
 
+## 1.4.1 (2026-11-25)
+Quality list and health check improved after Ali's screenshot (he did not know what the columns meant, the connection time stayed at 1 h 43 min after a restart, the ESP warning and the big-packet warning were unclear).
+- **Quality list:** a header row names every column (with a hover text); the last column is split into **Connection time** (how long the current connection has been up) and **Last 24 hours** (time connected of the last 24 h, e.g. "22 h 10 min of 24 h", and the number of drops). A short **cause line** under a poor connection says whether the road outside the tunnel is bad too or the problem is inside the tunnel / at the far router (`q_where`; the longer `q_diag` stays on the connection page).
+- **Fix: connection time after a restart.** The time came from the minute log; a hole in it (server off or restarting) was not a drop, so the old connection time went on. Now a hole longer than 180 s (`Q_GAP`) counts as a drop, restarts the connection time and is counted in "drops in 24 h". (web: `q_sessions`)
+- **Shared far address:** outgoing sites that dial the same address share one IPsec connection, so its counters cannot be told apart per tunnel. The health check now says exactly that, naming the other tunnels ("give each tunnel its own address on the far router"), instead of the vague "traffic may not be encrypted". (gw: `chk_hosts_cb`, `check_site`)
+- **Live encryption test:** for a tunnel with its own IPsec connection, `check` sends 3 pings through the tunnel and reads the IPsec byte counters before and after: OK when both directions grew, WARN when the pings were answered but the counters did not grow. (gw: `esp_bytes`; adds about half a second per tunnel to a check)
+- Tests: new `dev/t36/run.sh` (11 checks); t27-t35 still pass.
+
 ## 1.4.0 (2026-11-25)
 Automatic MTU with a range, router limit (MRU) care, road and UDP diagnostics (requested by Ali: "between 1250 and 1400, a bit lower than measured, careful about MRU, auto or manual per connection, the helpful alarms, and an answer for UDP").
 - **`mtu = auto`** per connection (sites.conf; a number still means a fixed size). Range keys `mtu_min` (default 1250), `mtu_max` (1400), `mtu_margin` (20 bytes) per connection, defaults in `quality.conf`, plus defaults-only `mtu_auto_min` (measure every N minutes, default 30, minimum 5) and `mtu_auto_max_day` (changes per 24 h, default 6). Checked by `validate_mtu_range` / `check_pq`. Settings page: new box "Automatic MTU"; connection forms: MTU box accepts `auto` and shows the three range boxes. (gw: `mtu_cfg`, `mtu_is_auto`, `mtu_offer`, `mtu_set_value`; web: `mtu_fieldset`, `PQ_KEYS`, `KEYS`)

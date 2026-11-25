@@ -35,7 +35,7 @@ set -euo pipefail
 : "${XL2TPD_CONF:=/etc/xl2tpd/xl2tpd.conf}"
 : "${SECRETS:=/etc/ipsec.secrets}"
 : "${NO_RESTART:=0}"
-VERSION="1.4.0"
+VERSION="1.4.1"
 SITES="$CONF_DIR/sites.conf"
 DIALIN="${DIALIN_FILE:-$CONF_DIR/dialin.conf}"      # settings of the dial-in server (see "dial-in" below)
 TAG="# managed by l2tp-gw"
@@ -1259,6 +1259,19 @@ check_server_site() {
   fi
 }
 
+# esp_bytes NAME: "bytes_in bytes_out" of the IPsec child connection of a site, read now (empty when not found)
+esp_bytes() {
+  local l bi bo
+  l=$(ipsec statusall 2>/dev/null | grep -E "^[[:space:]]*${1}\{[0-9]+\}:.*bytes_i" | tail -n1 || true)
+  [ -n "$l" ] || return 0
+  bi=$(printf '%s' "$l" | sed -n 's/.* \([0-9]\+\) bytes_i.*/\1/p'); bo=$(printf '%s' "$l" | sed -n 's/.* \([0-9]\+\) bytes_o.*/\1/p')
+  [ -n "$bi" ] && [ -n "$bo" ] && echo "$bi $bo"
+  return 0
+}
+chk_hosts_cb() {      # which outgoing sites dial the same far address (they share one IPsec connection)
+  [ "$S_MODE" != server ] && [ "$S_DISABLED" != yes ] && [ -n "$S_HOST" ] || return 0
+  CHK_HOSTSITES[${S_HOST,,}]="${CHK_HOSTSITES[${S_HOST,,}]:-} $S_NAME"
+}
 check_site() {
   validate_site
   if [ "$S_MODE" = server ]; then check_server_site; return 0; fi
@@ -1305,6 +1318,12 @@ check_site() {
   else
     chk FAIL "$n: PPP interface $ifc is down"
   fi
+  # Sites with the same far address share ONE IPsec connection: its counters cannot be told apart per tunnel
+  local others="" k
+  for k in ${CHK_HOSTSITES[${S_HOST,,}]:-}; do [ "$k" = "$n" ] || others="$others $k"; done
+  if [ -n "$others" ]; then
+    chk WARN "$n: shares one IPsec connection with$others (same far address $S_HOST): encrypted-bytes counters and measurements cannot be told apart per tunnel. Give each tunnel its own address on the far router"
+  else
   # ESP counters: PPP is carried inside ESP, so both directions must count bytes
   line=$(printf '%s\n' "$CHK_IPSEC_ALL" | grep -E "^[[:space:]]*${n}\{[0-9]+\}:.*bytes_i" | tail -n1 || true)
   if [ -n "$line" ]; then
@@ -1319,6 +1338,19 @@ check_site() {
     fi
   elif [ "$ppp_up" = 1 ]; then
     chk WARN "$n: cannot read ESP counters from 'ipsec statusall'"
+  fi
+  # live proof: a few pings through THIS tunnel must make its own IPsec counters grow (the totals above are only "ever counted")
+  if [ "$ppp_up" = 1 ] && [ "$ipsec_ok" = 1 ] && [ -n "${peer:-}" ] && [ -n "$line" ] && command -v ping >/dev/null 2>&1; then
+    local b1 b2 i1 o1 i2 o2
+    b1=$(esp_bytes "$n"); read -r i1 o1 <<< "$b1"
+    if ping -c 3 -i 0.2 -W 1 -n -q -I "$ifc" "$peer" >/dev/null 2>&1; then
+      b2=$(esp_bytes "$n"); read -r i2 o2 <<< "$b2"
+      if [ -n "${i1:-}" ] && [ -n "${i2:-}" ]; then
+        if [ "$i2" -gt "$i1" ] && [ "$o2" -gt "$o1" ]; then chk OK "$n: live test: test pings were counted by IPsec (out +$((o2 - o1)) B, in +$((i2 - i1)) B): encrypted"
+        else chk WARN "$n: live test: pings through the tunnel were answered but its IPsec counters did not grow: the traffic may not be encrypted"; fi
+      fi
+    fi
+  fi
   fi
   # routes
   if [ -f "$CONF_DIR/routes.d/$n" ]; then
@@ -1969,6 +2001,8 @@ cmd_check() {
     fi
     if [ -z "$(dialin_get public_ip)" ]; then chk WARN "dial-in: public_ip is not set - routers that check the server identity may refuse"; fi
   fi
+  declare -gA CHK_HOSTSITES=()
+  for_each_site chk_hosts_cb
   for_each_site check_site
   check_dup_routes
   # tunnels that share the same peer address need ONE multipath route, or all replies use one tunnel
