@@ -1,0 +1,2 @@
+#!/bin/bash
+echo "resolvectl $*" >> "$STATE_DIR/dns.log"

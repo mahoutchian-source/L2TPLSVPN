@@ -1,0 +1,2 @@
+#!/bin/bash
+echo "systemctl $*" >> $(dirname $0)/../calls; exit 0

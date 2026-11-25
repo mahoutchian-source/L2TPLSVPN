@@ -1,0 +1,6 @@
+#!/bin/bash
+# stub: log arguments (and stdin url config), succeed unless FAILFILE exists
+echo "ARGS: $*" >> "$STATE_DIR/curl.log"
+cat >> "$STATE_DIR/curl.log" 2>/dev/null
+[ -f "$STATE_DIR/curl.fail" ] && exit 22
+exit 0
