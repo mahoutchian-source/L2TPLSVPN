@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 CONF_DIR = os.environ.get("CONF_DIR", "/etc/l2tp-gw")
 SITES = os.path.join(CONF_DIR, "sites.conf")
 WEB_CONF = os.path.join(CONF_DIR, "web.conf")
@@ -1838,6 +1838,12 @@ legend{font-weight:650;font-size:15px;padding:0 8px 0 0;margin-left:0}
 .qkv{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--line);font-size:13.5px}.qkv span{color:var(--mute)}.qkv b{text-align:right;font-weight:600;word-break:break-word}
 .evlog{white-space:pre-wrap;font-size:12px;margin:0;color:var(--mute)}.acts2{display:flex;gap:8px;flex-wrap:wrap}
 @media(max-width:900px){.qrow{grid-template-columns:1fr 1fr}.qsp{display:none}}
+.hl{font-weight:600}.hl.OK{color:var(--ok)}.hl.WARN{color:var(--warn)}.hl.FAIL{color:var(--bad)}.hp{color:var(--mute);max-width:260px}
+.hcard summary{cursor:pointer;display:flex;gap:10px;align-items:center;flex-wrap:wrap}.hcard[open] summary{margin-bottom:8px}
+.hrow{display:flex;gap:10px;padding:5px 0;border-top:1px solid var(--line);font-size:13.5px}.hrow .pill{flex:none}
+.qchart .td{fill:var(--accent)}.qchart .tu{fill:var(--ok)}.qchart .hv{fill:transparent}.qchart .hv:hover{fill:var(--accent-soft)}.qchart .avl{stroke:var(--warn);stroke-width:1.2;stroke-dasharray:4 3;vector-effect:non-scaling-stroke}
+.qspark .mb{fill:var(--accent);opacity:.8}.mute{color:var(--mute);font-weight:400}.cgrid2{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:14px}@media(min-width:1000px){.cgrid2{grid-template-columns:1fr 1fr}}
+.tsort th[onclick]:hover{color:var(--accent)}.tsort tbody tr:hover{background:var(--accent-soft)}
 .chip{background:var(--chip);border-radius:6px;padding:1px 8px;font-size:12.5px}
 .chip.tag{background:none;border:1px solid var(--line2);color:var(--mute)}
 .chip.tag.mtuok{border-color:var(--ok);color:var(--ok)}.chip.tag.mtured{border-color:var(--bad);color:var(--bad);background:var(--chip)}.chip.tag.mtubad{border-color:var(--warn);color:var(--warn);background:var(--chip)}
@@ -1969,6 +1975,7 @@ if(document.getElementById('live'))setInterval(speed,2000);
 function toggleTheme(){var d=document.documentElement,c=d.getAttribute('data-theme');
  if(!c)c=(window.matchMedia&&matchMedia('(prefers-color-scheme: light)').matches)?'light':'dark';
  var n=c==='dark'?'light':'dark';d.setAttribute('data-theme',n);try{localStorage.setItem('theme',n)}catch(e){}}
+function tsort(th){var t=th.closest('table'),i=th.cellIndex,b=t.tBodies[0],r=[].slice.call(b.rows),d=th.getAttribute('data-dir')==='d'?'a':'d';[].forEach.call(t.querySelectorAll('th'),function(x){x.removeAttribute('data-dir')});th.setAttribute('data-dir',d);r.sort(function(a,c){var x=a.cells[i].getAttribute('data-v'),y=c.cells[i].getAttribute('data-v'),nx=parseFloat(x),ny=parseFloat(y),v=(isNaN(nx)||isNaN(ny))?String(x).localeCompare(String(y)):nx-ny;return d==='a'?v:-v});r.forEach(function(x){b.appendChild(x)})}
 function showpw(id,b){var i=document.getElementById(id);i.type=i.type==='password'?'text':'password';b.textContent=i.type==='password'?'Show':'Hide'}
 """
 
@@ -1977,7 +1984,7 @@ def csrf_of(sid):
     return SESSIONS[sid]["csrf"]
 
 
-NAV = [("/", "Dashboard"), ("/sites", "Sites"), ("/dialin", "Dial-in"), ("/traffic", "Traffic"), ("/quality", "Quality"), ("/events", "Events"), ("/routes", "Routes"), ("/check", "Health check"), ("/mtu", "Measure MTU"), ("/backup", "Backup"), ("/settings", "Settings")]
+NAV = [("/", "Dashboard"), ("/sites", "Sites"), ("/dialin", "Dial-in"), ("/traffic", "Traffic"), ("/quality", "Quality"), ("/events", "Events"), ("/routes", "Routes"), ("/mtu", "Measure MTU"), ("/backup", "Backup"), ("/settings", "Settings")]
 
 
 THEME_BOOT = ("try{var t=localStorage.getItem('theme');if(t)document.documentElement.setAttribute('data-theme',t)}catch(e){}")
@@ -3103,59 +3110,193 @@ def archive_page(sid, msg=None):
     return page("Traffic archive", body, sid, msg, "/traffic")
 
 
-def traffic_page(sid, msg=None):
+def t_sum(rows, today):
+    """(today, this week, this month, all) as [down, up] pairs"""
+    iso = today.isocalendar()[:2]
+    return (sum_days(rows, lambda d: d == today.isoformat()),
+            sum_days(rows, lambda d: datetime.strptime(d, "%Y-%m-%d").isocalendar()[:2] == iso),
+            sum_days(rows, lambda d: d[:7] == today.isoformat()[:7]),
+            sum_days(rows, lambda d: True))
+
+
+def t_chart(rows, ndays, unit, today, w=640, h=150):
+    """stacked bars per day: download (accent) with upload (green) on top; dashed line = average of the days shown"""
+    days = [(today - timedelta(days=i)).isoformat() for i in range(ndays - 1, -1, -1)]
+    tot = [sum(rows.get(d, [0, 0])) for d in days]
+    top = max(tot + [1])
+    pad_l, pad_b, pad_t = 8, 18, 14
+    ph = h - pad_b - pad_t
+    bw = (w - pad_l) / float(ndays)
+    o = ["<svg class=qchart viewBox='0 0 %d %d' preserveAspectRatio=none role=img aria-label='Traffic per day'>" % (w, h)]
+    for k in (0, .5, 1):
+        y = pad_t + ph * k
+        o.append("<line class=gr x1='%d' x2='%d' y1='%.1f' y2='%.1f'/>" % (pad_l, w, y, y))
+    for i, d in enumerate(days):
+        dn, up = rows.get(d, [0, 0])
+        x = pad_l + i * bw
+        hd, hu = dn * ph / top, up * ph / top
+        o.append("<g><title>%s: download %s, upload %s</title>"
+                 "<rect class=td x='%.1f' y='%.1f' width='%.1f' height='%.1f'/><rect class=tu x='%.1f' y='%.1f' width='%.1f' height='%.1f'/>"
+                 "<rect class=hv x='%.1f' y='%d' width='%.1f' height='%d'/></g>"
+                 % (d, html.escape(fmt_bytes(dn, unit)), html.escape(fmt_bytes(up, unit)),
+                    x, pad_t + ph - hd, max(bw - 1, 1), hd, x, pad_t + ph - hd - hu, max(bw - 1, 1), hu, x, pad_t, bw, ph))
+    avg = sum(tot) / float(ndays)
+    if avg > 0:
+        y = pad_t + ph - avg * ph / top
+        o.append("<line class=avl x1='%d' x2='%d' y1='%.1f' y2='%.1f'/>" % (pad_l, w, y, y))
+    o.append("<text class=lb x='%d' y='11'>%s a day at most &middot; dashed line = average %s</text><text class=lb x='%d' y='%d'>%d days ago</text>"
+             "<text class=lb x='%d' y='%d' text-anchor='end'>today</text></svg>"
+             % (pad_l + 2, html.escape(fmt_bytes(top, unit)), html.escape(fmt_bytes(avg, unit)), pad_l + 2, h - 4, ndays, w - 2, h - 4))
+    return "".join(o)
+
+
+def t_mini(rows, today, n=30):
+    days = [(today - timedelta(days=i)).isoformat() for i in range(n - 1, -1, -1)]
+    tot = [sum(rows.get(d, [0, 0])) for d in days]
+    top = max(tot + [1])
+    bw = 100.0 / n
+    return ("<svg class=qspark viewBox='0 0 100 24' preserveAspectRatio=none>%s</svg>"
+            % "".join("<rect x='%.2f' y='%.1f' width='%.2f' height='%.1f' class='mb'/>" % (i * bw, 24 - v * 22.0 / top - (1 if v else 0), bw - .4, v * 22.0 / top + (1 if v else 0))
+                      for i, v in enumerate(tot)))
+
+
+def t_tabs(base, win):
+    return "<div class=tabs>%s</div>" % "".join("<a class='tab%s' href='%s&w=%d'>%d days</a>" % (" on" if k == win else "", base, k, k) for k in (7, 30, 90))
+
+
+def t_pair(label, t, unit):
+    e = html.escape
+    return "<div><b>%s</b>&darr; %s<br>&uarr; %s</div>" % (label, e(fmt_bytes(t[0], unit)), e(fmt_bytes(t[1], unit)))
+
+
+def t_card(name, unit):
+    """small traffic card for the connection page"""
+    tz = get_tz(read_general()["timezone"])
+    today = datetime.now(tz).date()
+    rows = read_daily(name)
+    t = t_sum(rows, today)
+    return ("<div class=card><h2>Traffic <a class='btn sm' href='/traffic?name=%s' style='float:right'>All traffic numbers</a></h2>"
+            "<div class=tot>%s%s%s</div>%s<div class=hint>Last 30 days, one bar per day.</div></div>"
+            % (html.escape(name), t_pair("Today", t[0], unit), t_pair("This week", t[1], unit), t_pair("This month", t[2], unit), t_mini(rows, today)))
+
+
+def traffic_page(sid, msg=None, name=None, win=30):
     e = html.escape
     gen = read_general()
     unit, tz = gen["unit"], get_tz(gen["timezone"])
-    local = datetime.now(tz)
-    today = local.date()
-    st = read_state()
-    iso = today.isocalendar()
+    today = datetime.now(tz).date()
+    win = win if win in (7, 30, 90) else 30
+    sites = load_sites()
     head = ""
     if not collector_alive():
         head = ("<div class=warnbox>The traffic collector is not running, so numbers are not being updated. "
                 "On the server run: l2tp-gw-web install</div>")
-    cards = ""
-    for s in load_sites():
+    note = ("Download = sent to the MikroTik, upload = received from it. Counted inside the tunnel (the real internet traffic is a bit higher "
+            "because of IPsec overhead). Days follow %s time. Unit: %s." % (e(gen["timezone"]), unit))
+    links = "<span><a class=btn href=/traffic/archive>Archive</a> <a class=btn href=/traffic/csv>Download all as CSV</a></span>"
+    if name is not None:
+        s = next((x for x in sites if x["name"] == name), None)
+        if s is None:
+            return page("Traffic", "<div class=bar><h1>Unknown connection</h1></div><p><a class=btn href=/traffic>Back to Traffic</a></p>", sid, (False, "No connection named '%s'." % name), "/traffic")
+        return traffic_detail(sid, s, msg, win, unit, tz, today, head, note)
+    # ---- overview: totals, chart, comparison table
+    allrows, per = {}, []
+    for s in sites:
+        rows = read_daily(s["name"])
+        t = t_sum(rows, today)
+        per.append((s, rows, t))
+        for d, v in rows.items():
+            a = allrows.setdefault(d, [0, 0])
+            a[0] += v[0]
+            a[1] += v[1]
+    tt = t_sum(allrows, today)
+    month_all = sum(tt[2]) or 1
+    trs = ""
+    for s, rows, t in per:
         n = s["name"]
-        rows = read_daily(n)
-        tot_today = sum_days(rows, lambda d: d == today.isoformat())
-        tot_week = sum_days(rows, lambda d: datetime.strptime(d, "%Y-%m-%d").isocalendar()[:2] == iso[:2])
-        tot_month = sum_days(rows, lambda d: d[:7] == today.isoformat()[:7])
-        tot_all = sum_days(rows, lambda d: True)
-        def cell(label, t):
-            return "<div><b>%s</b>&darr; %s<br>&uarr; %s</div>" % (label, e(fmt_bytes(t[0], unit)), e(fmt_bytes(t[1], unit)))
-        days = [(today - timedelta(days=i)).isoformat() for i in range(29, -1, -1)]
-        peak = max([sum(rows.get(d, [0, 0])) for d in days] + [1])
-        bars = "".join("<div class=bar title='%s: &darr; %s &uarr; %s'><i style='height:%d%%'></i></div>"
-                       % (d, e(fmt_bytes(rows.get(d, [0, 0])[0], unit)), e(fmt_bytes(rows.get(d, [0, 0])[1], unit)),
-                          int(sum(rows.get(d, [0, 0])) * 100 / peak)) for d in days)
-        table = "".join("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
-                        % (d, e(fmt_bytes(rows[d][0], unit)), e(fmt_bytes(rows[d][1], unit)), e(fmt_bytes(sum(rows[d]), unit)))
-                        for d in sorted(rows, reverse=True)[:62])
-        q = st["quota"].get(n)
-        qbox = ""
-        if s.get("quota_gb"):
-            since = datetime.fromtimestamp(q["reset_at"], tz).strftime("%Y-%m-%d %H:%M") if q else "-"
-            qbox = (quota_html(s, st, unit) +
-                    "<div class=qtxt>Counter started %s &middot; warning at %s%%</div>"
-                    "<form method=post action=/traffic/reset onsubmit=\"return confirm('Reset the limit counter of %s? Reports are kept.')\">"
-                    "<input type=hidden name=csrf value='%s'><input type=hidden name=name value='%s'>"
-                    "<button class='btn sm' style='margin-top:6px'>Reset limit counter</button></form>"
-                    % (since, e(s.get("quota_warn") or "80"), e(n), e(csrf_of(sid)), e(n)))
-        cards += ("<div class=card><h2>%s <small style='font-weight:normal;opacity:.7'>(%s)</small></h2>%s<div class=tot>%s%s%s%s</div>"
-                  "<div class=qtxt>Last 30 days (hover a bar for the numbers)</div><div class=bars>%s</div>"
-                  "<form method=post action=/traffic/reset style='margin:8px 0' onsubmit=\"return confirm('Reset ALL numbers of %s (usage reports and limit counter)? The old daily reports are moved to an archive folder, not deleted.')\">"
-                  "<input type=hidden name=csrf value='%s'><input type=hidden name=name value='%s'><input type=hidden name=all value=1>"
-                  "<button class='btn sm link' style='padding-left:0'>Reset all numbers of this site</button></form>"
-                  "<details><summary>Daily table</summary><table class=t><tr><th>Date</th><th>Download</th><th>Upload</th><th>Total</th></tr>%s</table></details></div>"
-                  % (e(n), "dial-in client" if is_server(s) else "outgoing", qbox, cell("Today", tot_today), cell("This week", tot_week), cell("This month", tot_month),
-                     cell("All recorded", tot_all), bars, e(n), e(csrf_of(sid)), e(n), table or "<tr><td colspan=4>No data yet</td></tr>"))
-    body = ("<div class=bar><div><h1>Traffic</h1><div class=sum>Download = sent to the MikroTik, upload = received from it. "
-            "Counted inside the tunnel (the real internet traffic is a bit higher because of IPsec overhead). "
-            "Days follow %s time. Unit: %s.</div></div><span><a class=btn href=/traffic/archive>Archive</a> <a class=btn href=/traffic/csv>Download all as CSV</a></span></div>%s<div class=tgrid>%s</div>"
-            % (e(gen["timezone"]), unit, head, cards or "<p>No sites yet.</p>"))
+        trs += ("<tr onclick=\"location='/traffic?name=%s'\" style='cursor:pointer'><td data-v='%s'><b>%s</b><small class=mute> %s</small></td>"
+                "<td data-v='%d'>&darr; %s<br>&uarr; %s</td><td data-v='%d'>&darr; %s<br>&uarr; %s</td><td data-v='%d'>&darr; %s<br>&uarr; %s</td>"
+                "<td data-v='%d'>%d%%</td><td>%s</td></tr>"
+                % (e(n), e(n), e(n), "dial-in client" if is_server(s) else "outgoing",
+                   sum(t[0]), e(fmt_bytes(t[0][0], unit)), e(fmt_bytes(t[0][1], unit)),
+                   sum(t[1]), e(fmt_bytes(t[1][0], unit)), e(fmt_bytes(t[1][1], unit)),
+                   sum(t[2]), e(fmt_bytes(t[2][0], unit)), e(fmt_bytes(t[2][1], unit)),
+                   sum(t[2]), int(sum(t[2]) * 100 / month_all), t_mini(rows, today)))
+    th = "".join("<th onclick='tsort(this)' style='cursor:pointer'>%s</th>" % x for x in ("Connection", "Today", "This week", "This month", "Share of month"))
+    table = ("<div class=card><h2>Connections</h2><div class=tscroll><table class='qtab tsort'><thead><tr>%s<th>Last 30 days</th></tr></thead><tbody>%s</tbody></table></div>"
+             "<p class=hint>Click a column title to sort, click a row for the details of that connection.</p></div>"
+             % (th, trs or "<tr><td colspan=6>No connections yet</td></tr>"))
+    chart = ("<div class=card><div class=chead><h2>All connections together</h2>%s</div>%s"
+             "<div class=lg><span><i class=d></i>Download</span><span><i class=u></i>Upload</span></div></div>"
+             % (t_tabs("/traffic?x=1", win), t_chart(allrows, win, unit, today)))
+    summary = ("<div class='card'><div class=tot>%s%s%s%s</div></div>"
+               % (t_pair("Today", tt[0], unit), t_pair("This week", tt[1], unit), t_pair("This month", tt[2], unit), t_pair("All recorded", tt[3], unit)))
+    body = ("<div class=bar><div><h1>Traffic</h1><div class=sum>%s</div></div>%s</div>%s%s%s%s"
+            % (note, links, head, summary, chart, table))
     return page("Traffic", body, sid, msg, "/traffic")
+
+
+def traffic_detail(sid, s, msg, win, unit, tz, today, head, note):
+    e = html.escape
+    n = s["name"]
+    st = read_state()
+    rows = read_daily(n)
+    t = t_sum(rows, today)
+    days30 = [(today - timedelta(days=i)).isoformat() for i in range(29, -1, -1)]
+    tot30 = [sum(rows.get(d, [0, 0])) for d in days30]
+    avg30 = sum(tot30) / 30.0
+    busy = max(rows, key=lambda d: sum(rows[d])) if rows else None
+    first = today.replace(day=1)
+    prev_key = (first - timedelta(days=1)).isoformat()[:7]
+    prev = sum_days(rows, lambda d: d[:7] == prev_key)
+    cur = t[2]
+    if sum(prev) > 0:
+        ch = (sum(cur) - sum(prev)) * 100.0 / sum(prev)
+        vs = "%s so far this month, %s in the whole last month (%s%.0f%% of it)" % (fmt_bytes(sum(cur), unit), fmt_bytes(sum(prev), unit), "+" if ch >= 0 else "", ch)
+    else:
+        vs = "%s so far this month, no data for last month" % fmt_bytes(sum(cur), unit)
+    stats = ("<div class=card><h2>Numbers</h2>"
+             "<div class=qkv><span>Average per day (last 30 days)</span><b>%s</b></div>"
+             "<div class=qkv><span>Busiest day</span><b>%s</b></div>"
+             "<div class=qkv><span>This month and last month</span><b>%s</b></div></div>"
+             % (e(fmt_bytes(avg30, unit)), e("%s (%s)" % (busy, fmt_bytes(sum(rows[busy]), unit))) if busy else "-", e(vs)))
+    q = st["quota"].get(n)
+    qbox = ""
+    if s.get("quota_gb"):
+        since = datetime.fromtimestamp(q["reset_at"], tz).strftime("%Y-%m-%d %H:%M") if q else "-"
+        eta = ""
+        if q:
+            limit = float(s["quota_gb"]) * UNITS[unit]
+            used = quota_used(q, s.get("quota_dir") or "total")
+            el = time.time() - q["reset_at"]
+            if used > 0 and el >= 3600 and used < limit:
+                left = (limit - used) / (used / el)
+                eta = "<div class=qtxt>At this pace the limit is reached in %s (about %s).</div>" % (
+                    q_dur(left), datetime.fromtimestamp(time.time() + left, tz).strftime("%Y-%m-%d %H:%M"))
+        qbox = (quota_html(s, st, unit) + eta +
+                "<div class=qtxt>Counter started %s &middot; warning at %s%%</div>"
+                "<form method=post action=/traffic/reset onsubmit=\"return confirm('Reset the limit counter of %s? Reports are kept.')\">"
+                "<input type=hidden name=csrf value='%s'><input type=hidden name=name value='%s'>"
+                "<button class='btn sm' style='margin-top:6px'>Reset limit counter</button></form>"
+                % (since, e(s.get("quota_warn") or "80"), e(n), e(csrf_of(sid)), e(n)))
+        qbox = "<div class=card><h2>Traffic limit</h2>%s</div>" % qbox
+    table = "".join("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+                    % (d, e(fmt_bytes(rows[d][0], unit)), e(fmt_bytes(rows[d][1], unit)), e(fmt_bytes(sum(rows[d]), unit)))
+                    for d in sorted(rows, reverse=True)[:90])
+    chart = ("<div class=card><div class=chead><h2>Per day</h2>%s</div>%s"
+             "<div class=lg><span><i class=d></i>Download</span><span><i class=u></i>Upload</span></div></div>"
+             % (t_tabs("/traffic?name=%s" % e(n), win), t_chart(rows, win, unit, today)))
+    tabl = ("<div class=card><details><summary>Daily table (last 90 days)</summary><table class='qtab'><tr><th>Date</th><th>Download</th><th>Upload</th><th>Total</th></tr>%s</table></details>"
+            "<form method=post action=/traffic/reset style='margin:12px 0 0' onsubmit=\"return confirm('Reset ALL numbers of %s (usage reports and limit counter)? The old daily reports are moved to an archive folder, not deleted.')\">"
+            "<input type=hidden name=csrf value='%s'><input type=hidden name=name value='%s'><input type=hidden name=all value=1>"
+            "<button class='btn sm link' style='padding-left:0'>Reset all numbers of this connection</button></form></div>"
+            % (table or "<tr><td colspan=4>No data yet</td></tr>", e(n), e(csrf_of(sid)), e(n)))
+    top = ("<div class=bar><div><h1>%s</h1><div class=sum>%s &middot; traffic</div></div>"
+           "<div class=acts2><a class=btn href='/traffic'>All connections</a><a class=btn href='/conn?name=%s'>Quality</a></div></div>"
+           % (e(n), "dial-in client" if is_server(s) else "outgoing site", e(n)))
+    tots = "<div class=card><div class=tot>%s%s%s%s</div></div>" % (t_pair("Today", t[0], unit), t_pair("This week", t[1], unit), t_pair("This month", t[2], unit), t_pair("All recorded", t[3], unit))
+    body = top + head + tots + chart + "<div class=cgrid2>" + stats + qbox + "</div>" + tabl + "<p class=note>%s</p>" % note
+    return page("Traffic " + n, body, sid, msg, "/traffic")
 
 
 def mtu_targets():
@@ -3507,12 +3648,56 @@ def ipsec_info(name, server):
     return info
 
 
-def quality_page(sid, msg=None):
+# ---------- health check inside the Quality pages (output of "l2tp-gw check", cached for 30 s) ----------
+_HC = {"t": 0.0, "lines": []}
+
+
+def health_lines(force=False):
+    """[(level, text)] from 'l2tp-gw check'; level OK / WARN / FAIL"""
+    if not force and time.time() - _HC["t"] < 30 and _HC["lines"]:
+        return _HC["lines"]
+    rc, out = run([GW, "check"], 60)
+    lines = []
+    for line in out.splitlines():
+        m = re.match(r"(OK|WARN|FAIL)\s+(.*)", line)
+        if m:
+            lines.append((m.group(1), m.group(2)))
+    if lines:
+        _HC["t"], _HC["lines"] = time.time(), lines
+    return lines
+
+
+def health_split(lines, names):
+    """-> ({site name: [(level, text without the name)]}, [(level, text) that belong to no site])"""
+    per, general = {n: [] for n in names}, []
+    for lv, tx in lines:
+        for n in names:
+            if tx.startswith(n + ": "):
+                per[n].append((lv, tx[len(n) + 2:]))
+                break
+        else:
+            general.append((lv, tx))
+    return per, general
+
+
+def health_worst(items):
+    lv = [x[0] for x in items]
+    return "FAIL" if "FAIL" in lv else "WARN" if "WARN" in lv else "OK" if lv else ""
+
+
+def health_rows(items):
+    e = html.escape
+    return "".join("<div class=hrow><span class='pill %s'>%s</span><span>%s</span></div>" % (lv, lv, e(tx)) for lv, tx in items)
+
+
+def quality_page(sid, msg=None, recheck=False):
     e = html.escape
     sites = [x for x in load_sites() if x.get("disabled") != "yes"]
     ms = mtu_status()
     rows_html, cnt = "", {"ok": 0, "warn": 0, "bad": 0, "none": 0}
     now = time.time()
+    hper, hgen = health_split(health_lines(recheck), [x["name"] for x in sites])
+    hbad = 0
     for s in sites:
         n = s["name"]
         rows = q_read(n)
@@ -3524,13 +3709,19 @@ def quality_page(sid, msg=None):
             up_txt = ("%s%s" % ("" if ses["exact"] else "over ", q_dur(now - ses["since"])))
         else:
             up_txt = "not connected"
-        rows_html += ("<a class='qrow' href='/conn?name=%s'><div class=qname><b>%s</b><small>%s</small></div>"
+        hw = health_worst(hper.get(n, []))
+        hprob = [x for x in hper.get(n, []) if x[0] != "OK"]
+        hbad += 1 if hprob else 0
+        hline = ("<small class='hl %s'>Health: %s</small>" % (hw, {"OK": "all fine", "WARN": "look at it", "FAIL": "broken"}[hw])) if hw else ""
+        if hprob:
+            hline += "<small class=hp>%s</small>" % e(hprob[0][1])
+        rows_html += ("<a class='qrow' href='/conn?name=%s'><div class=qname><b>%s</b><small>%s</small>%s</div>"
                       "<div><span class='qgrade %s'>%s</span></div>"
                       "<div><b>%s</b><small>lost</small></div><div><b>%s</b><small>delay</small></div><div><b>%s</b><small>swing</small></div>"
                       "<div class=qsp>%s</div>"
                       "<div><b>&darr; %s</b><small>&uarr; %s &middot; 1 h average</small></div>"
                       "<div><b>%s</b><small>drops in 24 h: %s</small></div></a>"
-                      % (e(n), e(n), "dial-in client" if is_server(s) else "outgoing site", cls, e(word),
+                      % (e(n), e(n), "dial-in client" if is_server(s) else "outgoing site", hline, cls, e(word),
                          q_num(st5["loss"], "%", 1), q_num(st5["rtt"], " ms"), q_num(st5["jit"], " ms"),
                          q_spark(rows), q_bps(st1h["down_avg"]), q_bps(st1h["up_avg"]), e(up_txt), ses["flaps"]))
     if not sites:
@@ -3538,16 +3729,23 @@ def quality_page(sid, msg=None):
     elif not any(q_read(s["name"]) for s in sites):
         rows_html = ("<div class=empty><p><b>No measurements yet</b></p><p>The first numbers appear within a minute or two "
                      "(the watcher measures every minute). Update the server programs and run <code>l2tp-gw apply</code> once if this stays empty.</p></div>")
-    summ = "%d good &middot; %d fair &middot; %d poor &middot; %d not measured (last 5 minutes)" % (cnt["ok"], cnt["warn"], cnt["bad"], cnt["none"])
+    summ = "%d good &middot; %d fair &middot; %d poor &middot; %d not measured (last 5 minutes) &middot; %d with a health problem" % (cnt["ok"], cnt["warn"], cnt["bad"], cnt["none"], hbad)
+    gw_ = health_worst(hgen)
+    gprob = [x for x in hgen if x[0] != "OK"]
+    srv = ""
+    if hgen:
+        srv = ("<details class='card hcard'%s><summary><span class='pill %s'>%s</span> Server and services: %s <a class='btn sm' href='/quality?recheck=1' style='float:right'>Check again</a></summary>%s</details>"
+               % (" open" if gprob else "", gw_, gw_, ("%d problem(s)" % len(gprob)) if gprob else "all %d checks fine" % len(hgen), health_rows(hgen)))
     body = ("<div class=bar><div><h1>Quality</h1><div class=sum>%s</div></div></div>"
-            "<div class='list qlist'>%s</div>"
+            "%s<div class='list qlist'>%s</div>"
             "<p class=note>Every minute five quick pings go through each tunnel and, to tell the cause apart, through the road outside it. "
             "Good = under 1%% lost, under 150 ms delay and a swing under 40 ms. Poor = 5%% lost, 400 ms or a 120 ms swing. "
-            "Click a connection for the graphs, the speed, the security state and the packet size.</p>" % (summ, rows_html))
+            "Health = the checklist of the server and of every tunnel (IPsec, PPP, encrypted traffic, routes). "
+            "Click a connection for the graphs, the speed, the security state and the packet size.</p>" % (summ, srv, rows_html))
     return page("Quality", body, sid, msg, "/quality")
 
 
-def conn_page(sid, name, win="6h", msg=None):
+def conn_page(sid, name, win="6h", msg=None, recheck=False):
     e = html.escape
     s = next((x for x in load_sites() if x["name"] == name), None)
     if s is None:
@@ -3649,7 +3847,11 @@ def conn_page(sid, name, win="6h", msg=None):
         pass
     evh = ("<div class=card><h2>Recent events of this connection</h2>%s</div>"
            % ("<pre class=evlog>%s</pre>" % e("\n".join(ev[-12:])) if ev else "<p class=hint>Nothing noted for this connection in the watcher log.</p>"))
-    body = head + verdict + "<div class=cgrid>" + charts + table + link + hist + "</div>" + evh
+    tcard = t_card(name, read_general()["unit"])
+    hitems = health_split(health_lines(recheck), [name])[0].get(name, [])
+    hcard = ("<div class=card><h2>Health check <a class='btn sm' href='/conn?name=%s&w=%s&recheck=1' style='float:right'>Check again</a></h2>%s</div>"
+             % (e(name), win, health_rows(hitems) or "<p class=hint>No health lines for this connection (it may be switched off or new).</p>"))
+    body = head + verdict + "<div class=cgrid>" + charts + table + link + hist + hcard + tcard + "</div>" + evh
     return page("Connection " + name, body, sid, msg, "/quality")
 
 
@@ -4236,12 +4438,12 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.json({"text": self.do_ping(q.get("name", [""])[0])})
         if u.path == "/edit":
             return self.send(200, edit_page(sid, q.get("name", [None])[0]))
-        if u.path == "/check":
-            return self.send(200, check_page(sid, FLASH.pop(sid, None)))
+        if u.path == "/check":                      # merged into Quality (1.2.0); old bookmarks still work
+            return self.redirect("/quality?recheck=1")
         if u.path == "/quality":
-            return self.send(200, quality_page(sid, FLASH.pop(sid, None)))
+            return self.send(200, quality_page(sid, FLASH.pop(sid, None), q.get("recheck", [""])[0] == "1"))
         if u.path == "/conn":
-            return self.send(200, conn_page(sid, q.get("name", [""])[0], q.get("w", ["6h"])[0], FLASH.pop(sid, None)))
+            return self.send(200, conn_page(sid, q.get("name", [""])[0], q.get("w", ["6h"])[0], FLASH.pop(sid, None), q.get("recheck", [""])[0] == "1"))
         if u.path == "/mtu":
             return self.send(200, mtu_page(sid, FLASH.pop(sid, None)))
         if u.path == "/logs":
@@ -4268,7 +4470,11 @@ class H(http.server.BaseHTTPRequestHandler):
         if u.path == "/settings":
             return self.send(200, settings_page(sid, FLASH.pop(sid, None)))
         if u.path == "/traffic":
-            return self.send(200, traffic_page(sid, FLASH.pop(sid, None)))
+            try:
+                w = int(q.get("w", ["30"])[0])
+            except ValueError:
+                w = 30
+            return self.send(200, traffic_page(sid, FLASH.pop(sid, None), q.get("name", [None])[0], w))
         if u.path == "/routes":
             rt_note_viewer(self.client_address[0])
             return self.send(200, routes_page(sid, FLASH.pop(sid, None)))

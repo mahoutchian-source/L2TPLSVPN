@@ -43,6 +43,7 @@ at the bottom. No passwords, keys or secrets in this file (the repository is pub
   MTU details: outgoing sites pass it to pppd (applies at the next reconnect); dial-in clients get it on the live link at once (ip-up hook `mtu-apply` and `dialin-sync`). Measuring uses `ping -M do -s N` with a halving search; a ppp link is raised to 1500 for the test and always restored; last line `RESULT addr=.. dev=.. current=.. max=.. suggested=..`. It only suggests.
 - 1.0.4: fix: MTU measuring also checks the outside road (a ping can pass inside the tunnel because outside packets get fragmented; suggestion = min(inside, road - 101)); fix: `dialin-sync` rewrites the ip-up hooks (so the MTU of a dial-in client survives a reconnect even if `apply` was not run after the update); MTU chip on the Dial-in page.
 - 1.0.5: `mtu-verify` (is the SET MTU really passing; watcher every 5 min; amber chip), MRU of the router shown (link MTU lower than set = router asked for less), "Check now".
+- 1.2.0: Health check merged into Quality (health line per connection + "Server and services" card; /check redirects); Traffic page rebuilt (overview table + chart, detail page `/traffic?name=`, traffic card on /conn).
 - 1.1.0: quality monitoring: `quality-sample` every minute (pings inside + outside the tunnel, byte counters) -> `quality/NAME.log`; pages `/quality` and `/conn?name=`; Telegram alert (switch `quality_alert`). Ping measures delay/loss, NOT the top speed of a line (a manual bandwidth test could come later).
 - 1.0.6: `mtu-test ADDRESS` follows the routing table (multipath: each way separately, shows route + tunnel); amber = router allows less (MRU), red = does not pass, two chips when both.
 
@@ -75,19 +76,24 @@ at the bottom. No passwords, keys or secrets in this file (the repository is pub
 
 - A DF ping through a tunnel proves nothing about the outside road: the outer packets may be fragmented. Measure inside AND outside, and say what was assumed. The measurement cannot see the peer's own MRU/max-mtu limit.
 
+## Ideas agreed but not built yet
+- Finance section (Ali, 2026-11-25): cost per day / week / month for each link, a price per megabyte for each link (download and upload separate), base currency Canadian dollars, with conversion to other currencies later. To be discussed with Ali before building.
+- Quality: tunnels that share the same local AND remote address cannot be measured one by one (the reply may return through the other tunnel). Ali is giving every tunnel its own local address on the MikroTik side and will report. Possible later: a warning in the panel for shared addresses; a manual bandwidth test (needs the MikroTik bandwidth server).
+
 ## 8. How to start the next session
 Tell Claude: "Read docs/PROJECT-MEMORY.md and docs/CHANGELOG.md in the repo, then continue." Claude must first clone the public repo
 (https://github.com/mahoutchian-source/L2TPLSVPN), read these two files and docs/KNOWN-ISSUES.md, check `bin/l2tp-gw` and `bin/l2tp-gw-web`
 have the same VERSION, and ask Ali what he wants next (usual options: look of the other pages, anti-filtering tunnel, the open items above).
 
 ## Where the tests are
-All test folders (t8 ... t31, allt.sh, screenshot scripts) are packed in `dev-tests.tar.gz` at the repo root (reason: GitHub web upload takes 100 files at a time, and Ali uploads a full package every time). To use them: `mkdir -p dev && tar xzf dev-tests.tar.gz -C dev && ln -s ../bin dev/build`. `dev/make-installer.sh` and `dev/installer-head.sh` stay as plain files (install.sh downloads them). Run each test from its own folder; do not use `pkill -f l2tp-gw-web` inside a command that contains that text.
+All test folders (t8 ... t32, allt.sh, screenshot scripts) are packed in `dev-tests.tar.gz` at the repo root (reason: GitHub web upload takes 100 files at a time, and Ali uploads a full package every time). To use them: `mkdir -p dev && tar xzf dev-tests.tar.gz -C dev && ln -s ../bin dev/build`. `dev/make-installer.sh` and `dev/installer-head.sh` stay as plain files (install.sh downloads them). Run each test from its own folder; do not use `pkill -f l2tp-gw-web` inside a command that contains that text; killed test runs leave tun devices (`ppp-*`) behind, delete them first.
 
 ## Log of changes to this file
 - 2026-11-25: created (reason: Ali asked for a project memory so a new session understands the files without the old conversation).
 - 2026-11-25: added version 1.0.4 (MTU of dial-in clients after reconnect, found by Ali on the real server). Lesson: an update that adds a hook needs the hook rewritten without `apply`; test the "updated but not applied" state.
 - 2026-11-25: MTU measuring fixed (road check), found by Ali on the real server (said 1500 where the router was capped at 1400).
 - 2026-11-25: version 1.0.5 (MTU verification and router MRU), requested by Ali: real ceiling per tunnel and amber warning when the set MTU does not pass.
+- 2026-11-25: version 1.2.0, requested by Ali: Health check merged into Quality, Traffic page rebuilt. Lesson: `%` binds tighter than `+` in Python, so an `+ extra +` inside a formatted string breaks the argument count (give the extra as a `%s` argument).
 - 2026-11-25: version 1.1.0, requested by Ali: connection quality monitoring (loss, delay, jitter, speed, grade, diagnosis, two new pages, Telegram alert on/off). Lessons: under `set -o pipefail` a failing `ip addr show` ends the script (use `|| true`); a literal `%` inside a `%`-formatted HTML string breaks the page (write `%%`); never run `pkill -f l2tp-gw-web` from a command line that contains that text; killed test runs leave tun devices behind (delete `ppp-*` before re-running).
 - 2026-11-25: version 1.0.6, requested by Ali: measure along the routing table (not a forced interface), show the way out, two colours for two different MTU problems.
-- 2026-11-25: tests packed into dev-tests.tar.gz (Ali's wish: one full package per upload instead of copying folders by hand); added section "Where the tests are".
+- 2026-11-25: tests packed into dev-tests.tar.gz (Ali's wish: one full package per upload instead of copying folders by hand); added section "Where the tests are" and section "Ideas agreed but not built yet" (finance section, shared-address note).

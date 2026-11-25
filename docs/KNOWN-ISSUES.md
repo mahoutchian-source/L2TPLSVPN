@@ -32,3 +32,6 @@
 - A site removed from `sites.conf` used to lose its traffic history -> now archived (Traffic > Archive).
 
 - Quality (1.1.0): ping measures delay and loss, not the top speed; the speed numbers are what users really used. A router that does not answer ping shows "No answer to ping" and no grade. History is kept 7 days (one line per minute).
+
+- Quality (1.1.0/1.2.0): two tunnels with the same local and remote address share the reply path, so loss and the MTU check can differ between them for no real reason. Give each tunnel its own address.
+- Traffic (1.2.0): the forecast of the traffic limit is a straight-line guess from the counter since the last reset; it is shown only after one hour of data.

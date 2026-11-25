@@ -35,7 +35,7 @@ set -euo pipefail
 : "${XL2TPD_CONF:=/etc/xl2tpd/xl2tpd.conf}"
 : "${SECRETS:=/etc/ipsec.secrets}"
 : "${NO_RESTART:=0}"
-VERSION="1.1.0"
+VERSION="1.2.0"
 SITES="$CONF_DIR/sites.conf"
 DIALIN="${DIALIN_FILE:-$CONF_DIR/dialin.conf}"      # settings of the dial-in server (see "dial-in" below)
 TAG="# managed by l2tp-gw"

@@ -3,6 +3,14 @@
 Newest first. Rule: every change adds a line here (what, why, where in the code) and bumps VERSION in
 `bin/l2tp-gw` AND `bin/l2tp-gw-web`. Bugs found and their fixes go to KNOWN-ISSUES.md.
 
+## 1.2.0 (2026-11-25)
+Health check merged into Quality, Traffic page rebuilt (both requested by Ali).
+- **Health check moved into the Quality page.** The checklist of `l2tp-gw check` (cached 30 s) is split: lines that start with a site name belong to that connection and show as a coloured "Health: all fine / look at it / broken" line in its Quality row (the first problem is written under it); all other lines (services, forwarding, NAT, dial-in firewall, shared peer addresses) are in one card "Server and services" that is closed when all is fine and open when there are problems. The connection page has a "Health check" card with all its lines and a "Check again" button. The menu item "Health check" is gone; `/check` redirects to `/quality?recheck=1`. `l2tp-gw check` on the server is unchanged. (web: `health_lines`, `health_split`, `health_worst`, `health_rows`, `quality_page`, `conn_page`, `NAV`)
+- **Traffic overview:** totals of all connections (today / week / month / all), one chart for all together (download and upload stacked, dashed average line, tabs 7 / 30 / 90 days), and one comparison table (today, week, month, share of the month, 30-day mini bars). Click a column title to sort, click a row for the details. (web: `traffic_page`, `t_sum`, `t_chart`, `t_mini`, `t_tabs`, `t_pair`, JS `tsort`)
+- **Traffic detail per connection** (`/traffic?name=NAME`): totals, per-day chart with tabs, average per day (30 days), busiest day, this month against last month, the traffic limit box (with a forecast "at this pace the limit is reached in ..."), daily table (90 days), reset buttons (moved here from the old cards). Archive and CSV buttons stay on the overview. (web: `traffic_detail`)
+- **Connection page** (`/conn`) has a small Traffic card (today / week / month and 30-day bars) with a link to the traffic details. (web: `t_card`)
+- Tests: new `dev/t32/run.sh` (24 checks); t31, t29, t27, t28 still pass; t8 and t21 text tests point at the new places.
+
 ## 1.1.0 (2026-11-25)
 Connection quality monitoring (users complained about slow/choppy links that get better after a reconnect).
 - **Measuring every minute** (`l2tp-gw quality-sample`, called by the watcher): 5 quick pings through each tunnel (`-I ppp-NAME`, to the peer address) and 5 pings outside the tunnel to the router's real address (dial-in client: the one IPsec peer, when there is exactly one). One line per site and minute in `/var/lib/l2tp-gw/quality/NAME.log`: `time up|down loss avg max jitter outloss outavg outmax rx_bytes tx_bytes`. 7 days are kept (pruned at 10200 lines); the log of a deleted site is removed with it. A tunnel that is down gets a `down` line. (gw: `pingstat`, `quality_cb`, `cmd_quality_sample`, `cmd_watch`)
