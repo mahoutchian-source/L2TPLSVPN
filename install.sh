@@ -22,7 +22,7 @@ say() { echo "== $*"; }
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 
 if [ -n "${L2TPGW_SRC:-}" ]; then
-  [ -d "$L2TPGW_SRC/bin" ] || die "L2TPGW_SRC has no bin folder"
+  [ -d "$L2TPGW_SRC/bin" ] || [ -f "$L2TPGW_SRC/l2tp-gw" ] || die "L2TPGW_SRC has no programs (neither bin/ nor l2tp-gw)"
   mkdir -p "$T/src"; cp -r "$L2TPGW_SRC"/. "$T/src/"
   SRC=$T/src
 else
@@ -37,16 +37,19 @@ else
 fi
 
 # ---- check before touching anything ----
-for f in bin/l2tp-gw bin/l2tp-gw-web dev/make-installer.sh dev/installer-head.sh docs/CHANGELOG.md README.md; do
-  [ -f "$SRC/$f" ] || die "The repository is incomplete: $f is missing. Nothing was changed."
+# The repository is FLAT (all files in one folder). The older layout with bin/ docs/ dev/ is still understood.
+if [ -f "$SRC/l2tp-gw" ]; then BIN=$SRC; DOCS=$SRC; MK=$SRC/make-installer.sh; HEADF=$SRC/installer-head.sh
+else BIN=$SRC/bin; DOCS=$SRC/docs; MK=$SRC/dev/make-installer.sh; HEADF=$SRC/dev/installer-head.sh; fi
+for f in "$BIN/l2tp-gw" "$BIN/l2tp-gw-web" "$MK" "$HEADF" "$DOCS/CHANGELOG.md" "$SRC/README.md"; do
+  [ -f "$f" ] || die "The repository is incomplete: ${f#$SRC/} is missing. Nothing was changed."
 done
-bash -n "$SRC/bin/l2tp-gw" || die "bin/l2tp-gw has a syntax error. Nothing was changed."
-command -v python3 >/dev/null 2>&1 && { python3 -I -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$SRC/bin/l2tp-gw-web" || die "bin/l2tp-gw-web has a syntax error. Nothing was changed."; }
-V1=$(sed -n 's/^VERSION="\(.*\)"/\1/p' "$SRC/bin/l2tp-gw")
-V2=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$SRC/bin/l2tp-gw-web")
+bash -n "$BIN/l2tp-gw" || die "l2tp-gw has a syntax error. Nothing was changed."
+command -v python3 >/dev/null 2>&1 && { python3 -I -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$BIN/l2tp-gw-web" || die "l2tp-gw-web has a syntax error. Nothing was changed."; }
+V1=$(sed -n 's/^VERSION="\(.*\)"/\1/p' "$BIN/l2tp-gw")
+V2=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$BIN/l2tp-gw-web")
 [ -n "$V1" ] && [ "$V1" = "$V2" ] || die "The two programs have different versions (l2tp-gw=$V1, l2tp-gw-web=$V2). Nothing was changed."
 say "Version $V1 downloaded and checked"
 
 # ---- build the single-file installer from these files and run it ----
-bash "$SRC/dev/make-installer.sh" "$T/l2tp-gw-install.sh" >/dev/null || die "Could not build the installer."
+bash "$MK" "$T/l2tp-gw-install.sh" >/dev/null || die "Could not build the installer."
 bash "$T/l2tp-gw-install.sh" "$@"
