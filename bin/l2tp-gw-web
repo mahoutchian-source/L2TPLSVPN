@@ -1859,6 +1859,52 @@ table.t td:first-child,table.t th:first-child{text-align:left}
 @media (max-width:760px){
  .row{grid-template-columns:4px 1fr;gap:8px 14px;padding-right:14px}
  .row>.rail{grid-row:1 / span 4}.acts{justify-content:flex-start}}
+/* ---- 1.0.3 look: soft glow background, glass cards, live map, donut, sparklines (both themes) ---- */
+:root{--glow1:rgba(91,140,255,.16);--glow2:rgba(61,220,151,.09);--glass:rgba(24,34,53,.62);--glassline:rgba(255,255,255,.07);--shadow:0 10px 40px -18px rgba(0,0,0,.65)}
+:root[data-theme=light]{--glow1:rgba(53,82,212,.10);--glow2:rgba(19,138,87,.07);--glass:rgba(255,255,255,.78);--glassline:rgba(20,30,60,.08);--shadow:0 10px 34px -20px rgba(30,45,90,.35)}
+@media (prefers-color-scheme:light){:root:not([data-theme]){--glow1:rgba(53,82,212,.10);--glow2:rgba(19,138,87,.07);--glass:rgba(255,255,255,.78);--glassline:rgba(20,30,60,.08);--shadow:0 10px 34px -20px rgba(30,45,90,.35)}}
+body{background:radial-gradient(1000px 520px at 12% -6%,var(--glow1),transparent 70%),radial-gradient(900px 520px at 100% 0%,var(--glow2),transparent 70%),var(--bg);background-attachment:fixed}
+.card,.list,.chk,.hero,.glass{background:var(--glass);border-color:var(--glassline);border-radius:18px;box-shadow:var(--shadow);-webkit-backdrop-filter:blur(14px) saturate(1.2);backdrop-filter:blur(14px) saturate(1.2)}
+.side{background:var(--glass);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px)}
+.btn{border-radius:10px}.btn.pri{background:linear-gradient(135deg,var(--accent),#7c6cff);border-color:transparent;color:#fff;box-shadow:0 8px 22px -10px var(--accent)}
+.row:hover{background:var(--accent-soft)}
+.top{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr);gap:16px;margin-bottom:16px;align-items:stretch}
+.top>.col{gap:16px}.top .card{margin:0}
+.mapcard{padding:18px 20px 12px}
+.mapcard h2,.healthcard h2,.chartcard h2{font-size:13px;font-weight:600;color:var(--mute);margin:0 0 4px;letter-spacing:.04em}
+.mapverdict{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:650;letter-spacing:-.015em;margin:2px 0 0}
+.mapsub{color:var(--mute);margin:2px 0 6px}
+svg.netmap{width:100%;height:auto;display:block;overflow:visible}
+.netmap text{fill:var(--ink);font:13px var(--sans)}.netmap .cap{fill:var(--mute);font-size:11px;letter-spacing:.08em}
+.netmap .ln{fill:none;stroke-width:2;stroke-linecap:round}
+.netmap .ln.up{stroke:var(--ok)}.netmap .ln.noipsec{stroke:var(--bad)}.netmap .ln.noipsecok{stroke:var(--warn);stroke-dasharray:6 5}
+.netmap .ln.half{stroke:var(--warn);stroke-dasharray:6 5}.netmap .ln.down{stroke:var(--bad);stroke-dasharray:2 6;opacity:.75}
+.netmap .ln.wait,.netmap .ln.off{stroke:var(--mute);stroke-dasharray:2 6;opacity:.45}
+.netmap .nd.up{fill:var(--ok)}.netmap .nd.noipsec,.netmap .nd.down{fill:var(--bad)}.netmap .nd.noipsecok,.netmap .nd.half{fill:var(--warn)}.netmap .nd.wait,.netmap .nd.off{fill:var(--mute)}
+.netmap .flow{fill:var(--ink)}
+.netmap .gw{fill:var(--accent)}.netmap .gwr{fill:none;stroke:var(--accent);opacity:.25}
+.netmap .gwt{fill:#fff;font-weight:650;text-anchor:middle}
+.netmap a text:hover{text-decoration:underline}
+.healthcard{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+.donut{flex:none;width:118px;height:118px;position:relative}
+.donut svg{width:100%;height:100%;transform:rotate(-90deg)}
+.donut .tr{fill:none;stroke:var(--chip);stroke-width:9}.donut .pg{fill:none;stroke-width:9;stroke-linecap:round;transition:stroke-dasharray .6s}
+.donut .pg.ok{stroke:var(--ok)}.donut .pg.warn{stroke:var(--warn)}.donut .pg.bad{stroke:var(--bad)}.donut .pg.off{stroke:var(--mute)}
+.donut b{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:26px;font-weight:650;letter-spacing:-.02em}
+.donut b small{font-size:11px;font-weight:500;color:var(--mute);letter-spacing:0}
+.bigs{display:flex;flex-direction:column;gap:8px;min-width:0}.bigs div{color:var(--mute);font-size:13px}.bigs b{display:block;color:var(--ink);font-size:24px;font-weight:650;letter-spacing:-.02em;line-height:1.1}.bigs b i{font-style:normal;font-size:14px;font-weight:500;color:var(--mute)}
+.chartcard svg{width:100%;height:96px;display:block}
+.chartcard .tot{float:right;color:var(--mute);font-size:12px}
+.chartcard .lg{display:flex;gap:16px;color:var(--mute);font-size:12px;margin-top:4px}.chartcard .lg i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.chartcard .lg .d{background:var(--accent)}.chartcard .lg .u{background:var(--ok)}
+.chartcard .none{color:var(--mute);font-size:13px;padding:30px 0;text-align:center}
+svg.spark{width:100%;height:30px;display:block;margin-top:6px}svg.spark:empty{display:none}
+svg.spark path.a{fill:none;stroke:var(--ok);stroke-width:1.6;stroke-linejoin:round}svg.spark path.f{stroke:none;fill:var(--ok);opacity:.14}
+svg.spark.noipsec path.a,svg.spark.down path.a{stroke:var(--bad)}svg.spark.noipsec path.f{fill:var(--bad)}
+svg.spark.noipsecok path.a,svg.spark.half path.a{stroke:var(--warn)}svg.spark.noipsecok path.f,svg.spark.half path.f{fill:var(--warn)}
+@media (max-width:900px){.top{grid-template-columns:minmax(0,1fr)}}
+@media (prefers-reduced-motion:reduce){.netmap .flow{display:none}.donut .pg{transition:none}}
+
 """
 
 JS = """
@@ -1876,12 +1922,22 @@ function refresh(){var l=document.getElementById('live');if(!l)return;
 if(document.getElementById('live'))setInterval(refresh,10000);
 document.addEventListener('submit',function(e){var b=e.target.querySelector('[data-busy]');
  if(b){b.disabled=true;b.textContent=b.getAttribute('data-busy')}});
+
+var HIST={},TOT=[];
+function spath(a,w,h,mx){var n=a.length;if(n<2)return['',''];var st=w/(n-1),off=0,d='';for(var i=0;i<n;i++){var x=(off+i)*st,y=h-2-(mx>0?a[i]/mx:0)*(h-6);d+=(i?'L':'M')+x.toFixed(1)+' '+y.toFixed(1)}
+ return [d,d+'L'+((off+n-1)*st).toFixed(1)+' '+h+'L'+(off*st).toFixed(1)+' '+h+'Z']}
+function drawSparks(){var els=document.querySelectorAll('svg.spark[data-spark]');for(var i=0;i<els.length;i++){var a=HIST[els[i].getAttribute('data-spark')]||[];
+ var mx=Math.max.apply(null,a.concat([1e3])),p=spath(a,200,30,mx);els[i].innerHTML=p[0]?'<path class=f d="'+p[1]+'"/><path class=a d="'+p[0]+'"/>':''}
+ var c=document.getElementById('totchart');if(c){var dn=TOT.map(function(x){return x[0]}),up=TOT.map(function(x){return x[1]}),m=Math.max.apply(null,dn.concat(up,[1e3]));
+ var a=spath(dn,300,96,m),b=spath(up,300,96,m);c.innerHTML=a[0]?'<path d="'+a[1]+'" fill="var(--accent)" opacity=".22"/><path d="'+a[0]+'" fill="none" stroke="var(--accent)" stroke-width="1.8"/><path d="'+b[0]+'" fill="none" stroke="var(--ok)" stroke-width="1.8"/>':'';
+ var nn=document.getElementById('totnone');if(nn)nn.style.display=a[0]?'none':'block';c.style.display=a[0]?'block':'none';var t=document.getElementById('tottxt');if(t&&TOT.length){var l=TOT[TOT.length-1];t.textContent='now '+fmtbps(l[0]+l[1])}}}
 var SP={},PREV=null;
 function fmtbps(v){if(v>=1e6)return (v/1e6).toFixed(2)+' Mb/s';if(v>=1e3)return (v/1e3).toFixed(1)+' Kb/s';return Math.round(v)+' b/s'}
-function applySpeed(){var els=document.querySelectorAll('[data-speed]');for(var i=0;i<els.length;i++){var t=SP[els[i].getAttribute('data-speed')];if(t)els[i].innerHTML=t}}
+function applySpeed(){drawSparks();var els=document.querySelectorAll('[data-speed]');for(var i=0;i<els.length;i++){var t=SP[els[i].getAttribute('data-speed')];if(t)els[i].innerHTML=t}}
 function speed(){fetch('/speed',{credentials:'same-origin'}).then(function(r){if(r.status!==200)throw 0;return r.json()}).then(function(j){
- if(PREV&&j.t>PREV.t){var dt=j.t-PREV.t;for(var n in j.links){var a=PREV.links[n],b=j.links[n];
-  if(a&&b&&b.tx>=a.tx&&b.rx>=a.rx)SP[n]='&darr; '+fmtbps((b.tx-a.tx)*8/dt)+' &nbsp;&uarr; '+fmtbps((b.rx-a.rx)*8/dt)}}
+ var td=0,tu=0;if(PREV&&j.t>PREV.t){var dt=j.t-PREV.t;for(var n in j.links){var a=PREV.links[n],b=j.links[n];
+  if(a&&b&&b.tx>=a.tx&&b.rx>=a.rx){var dn=(b.tx-a.tx)*8/dt,upv=(b.rx-a.rx)*8/dt;SP[n]='&darr; '+fmtbps(dn)+' &nbsp;&uarr; '+fmtbps(upv);if(n!=='__nic'){var h=HIST[n]=HIST[n]||[];h.push(dn+upv);if(h.length>60)h.shift();td+=dn;tu+=upv}}}}
+ if(PREV&&j.t>PREV.t){TOT.push([td,tu]);if(TOT.length>60)TOT.shift()}
  PREV=j;applySpeed()}).catch(function(){})}
 if(document.getElementById('live'))setInterval(speed,2000);
 function toggleTheme(){var d=document.documentElement,c=d.getAttribute('data-theme');
@@ -1996,7 +2052,7 @@ def site_rows(ppp, ipsec):
         for k, label in (("internet", "no internet"), ("sites", "no other sites"), ("clients", "no dial-in clients")):
             if s.get("access_" + k) == "no":
                 tags += "<span class='chip tag'>%s</span>" % label
-        extra = ("<div class='speed mono' data-speed='%s'>&darr; - &nbsp;&uarr; -</div>" % e(n)) if ppp_up else ""
+        extra = ("<div class='speed mono' data-speed='%s'>&darr; - &nbsp;&uarr; -</div><svg class='spark %s' data-spark='%s' viewBox='0 0 200 30' preserveAspectRatio=none></svg>" % (e(n), cls, e(n))) if ppp_up else ""
         extra += quota_html(s, st, gen["unit"]) + auto_text(s, st, tz)
         rows += ("<div class=row><div class='rail %s'></div>"
                  "<div><div class=name>%s</div><div class='host mono'>%s</div></div>"
@@ -2683,6 +2739,61 @@ def meter(p, cls):
     return "<div class='meter %s'><span style='width:%d%%'></span></div>" % (cls, max(0, min(100, int(p))))
 
 
+def site_class(s, ppp, ipsec):
+    """one word for the state of a tunnel: off, up, noipsec, noipsecok, half, down (dial-in clients: up, wait, off)"""
+    n = s["name"]
+    if s.get("disabled") == "yes":
+        return "off"
+    up = n in ppp
+    if is_server(s):
+        return "up" if up else "wait"
+    has = bool(re.search(r"(^|\s)%s(\[\d+\]: ESTABLISHED|\{\d+\}:\s+INSTALLED)" % re.escape(n), ipsec or ""))
+    if up and ipsec is not None and not has:
+        return "noipsecok" if (s.get("ipsec_mode") or "heal") == "allow" else "noipsec"
+    if up:
+        return "up"
+    return "half" if has else "down"
+
+
+MAPTXT = {"up": "connected", "noipsec": "connected WITHOUT IPsec", "noipsecok": "connected, no IPsec (allowed)", "half": "IPsec up, waiting for PPP",
+          "down": "down", "wait": "not connected", "off": "switched off"}
+
+
+def map_svg(outs, ins, gwname):
+    """live network map: outgoing sites on the left, the gateway in the middle, dial-in clients on the right.
+    each item is (name, class). Lines are coloured by state; a moving dot runs along a working line."""
+    e = html.escape
+    rows = max(len(outs), len(ins), 1)
+    step = 44
+    H = 64 + rows * step
+    W, cx, cy = 760, 380, H / 2.0
+    out = ["<svg class=netmap viewBox='0 0 %d %d' role=img aria-label='Network map'>" % (W, H),
+           "<text class=cap x='150' y='20' text-anchor='end'>OUTGOING</text><text class=cap x='610' y='20'>DIAL-IN</text>"]
+    def ys(n):
+        top = (H - n * step) / 2.0 + step / 2.0 + 8
+        return [top + i * step for i in range(n)]
+    k = 0
+    for side, items in ((0, outs), (1, ins)):
+        for (name, cls), y in zip(items, ys(len(items))):
+            x = 170 if side == 0 else 590
+            d = ("M%d %.1f C%d %.1f %d %.1f %d %.1f" % (x, y, x + 120, y, cx - 120, cy, cx - 36, cy)) if side == 0 else \
+                ("M%d %.1f C%d %.1f %d %.1f %d %.1f" % (x, y, x - 120, y, cx + 120, cy, cx + 36, cy))
+            pid = "mp%d" % k
+            out.append("<path id=%s class='ln %s' d='%s'/>" % (pid, cls, d))
+            if cls in ("up", "noipsecok"):
+                out.append("<circle class=flow r='3'><animateMotion dur='%.1fs' begin='-%.1fs' repeatCount='indefinite'><mpath href='#%s'/></animateMotion></circle>"
+                           % (3.2 + (k % 4) * .35, (k % 5) * .6, pid))
+            out.append("<circle class='nd %s' cx='%d' cy='%.1f' r='5.5'><title>%s: %s</title></circle>" % (cls, x, y, e(name), MAPTXT.get(cls, cls)))
+            if side == 0:
+                out.append("<a href='/sites'><text x='%d' y='%.1f' text-anchor='end' dominant-baseline='middle'>%s</text></a>" % (x - 14, y, e(name)))
+            else:
+                out.append("<a href='/dialin'><text x='%d' y='%.1f' dominant-baseline='middle'>%s</text></a>" % (x + 14, y, e(name)))
+            k += 1
+    out.append("<circle class=gwr cx='%d' cy='%.1f' r='50'/><circle class=gwr cx='%d' cy='%.1f' r='62' opacity='.12'/>" % (cx, cy, cx, cy))
+    out.append("<circle class=gw cx='%d' cy='%.1f' r='36'/><text class=gwt x='%d' y='%.1f'>%s</text></svg>" % (cx, cy, cx, cy + 4, e((gwname or "Gateway")[:10])))
+    return "".join(out)
+
+
 def dash_html(sid):
     e = html.escape
     gen = read_general()
@@ -2847,12 +2958,23 @@ def dash_html(sid):
         verdict, vcls = "%d tunnel%s running without IPsec" % (plain, "" if plain == 1 else "s"), "bad"
     else:
         verdict, vcls = "All tunnels are up", "ok"
-    hero = ("<div class=hero><h2><i class='dot %s'></i>%s</h2><div class=sub>%d of %d sites up, %d of %d dial-in clients connected</div>"
-            "<div class=seg>%s</div>"
-            "<div class=legend><span><b class=up></b>up</span><span><b class=down></b>down</span>"
-            "<span><b class=wait></b>dial-in, not connected</span><span><b class=off></b>switched off</span></div></div>"
-            % (vcls, e(verdict), len(cl_up), len(cl), len(sv_up), len(sv),
-               "".join("<i class='%s' title='%s: %s'></i>" % (c, e(n), t) for c, n, t in segs)))
+    outs = [(x["name"], site_class(x, ppp, ipsec)) for x in cl_all]
+    ins = [(x["name"], site_class(x, ppp, ipsec)) for x in sites if is_server(x)]
+    n_on = len(cl) + len(sv)
+    n_up = len(cl_up) + len(sv_up)
+    ratio = (n_up * 100.0 / n_on) if n_on else 0
+    dcls = "off" if not n_on else ("bad" if (down_names or plain) else ("ok" if n_up == n_on else "warn"))
+    circ = 2 * 3.14159265 * 50
+    hero = ("<div class=top><div class='card mapcard'><h2>NETWORK MAP</h2>"
+            "<div class=mapverdict><i class='dot %s'></i>%s</div><div class=mapsub>%d of %d sites up, %d of %d dial-in clients connected</div>%s</div>"
+            "<div class=col><div class='card healthcard'><div class=donut><svg viewBox='0 0 120 120'><circle class=tr cx='60' cy='60' r='50'/>"
+            "<circle class='pg %s' cx='60' cy='60' r='50' stroke-dasharray='%.1f %.1f'/></svg><b>%d<small>of %d up</small></b></div>"
+            "<div class=bigs><div><b>%d <i>of %d</i></b>outgoing sites up</div><div><b>%d <i>of %d</i></b>dial-in clients connected</div></div></div>"
+            "<div class='card chartcard'><h2>TRAFFIC, SINCE THIS PAGE OPENED<span class=tot id=tottxt></span></h2>"
+            "<svg id=totchart viewBox='0 0 300 96' preserveAspectRatio=none></svg><div class=none id=totnone>Collecting speed samples...</div>"
+            "<div class=lg><span><i class=d></i>Download</span><span><i class=u></i>Upload</span></div></div></div></div>"
+            % (vcls, e(verdict), len(cl_up), len(cl), len(sv_up), len(sv), map_svg(outs, ins, "Gateway"),
+               dcls, circ * ratio / 100.0, circ, n_up, n_on, len(cl_up), len(cl), len(sv_up), len(sv)))
     # cards were appended in this order: 0 System, 1 Kernel health, 2 Network card, 3 Services, 4 Tunnels, 5 VPN traffic, 6 Alerts, 7 Recent events
     left, right = [cards[i] for i in (4, 5, 7)], [cards[i] for i in (0, 2, 3, 1, 6)]
     return hero + "<div class=cols><div class=col>%s</div><div class=col>%s</div></div>" % ("".join(left), "".join(right))
