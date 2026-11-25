@@ -1,0 +1,7 @@
+*.key
+*.crt
+out.new
+__pycache__/
+*.tar.gz
+l2tp-gw-install.sh
+*.b64
