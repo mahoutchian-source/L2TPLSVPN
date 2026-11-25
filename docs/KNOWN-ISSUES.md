@@ -9,6 +9,8 @@
 - IPv4 only. ESP counters of sites that share one IKE SA can be attributed to the wrong site; traffic counting uses ppp counters, so it is not affected.
 - Possible IP change of the Setuda sites seen in status: never verified in logs.
 
+- Automatic MTU (1.4.0) is tested only with stubs. The 101-byte wrapping is an estimate. The road is measured with ping: if the far router or the road drops ping, there is no measurement and nothing changes. During a measurement a ppp link below 1500 is raised to 1500 for a moment (existing behaviour of `mtu-test`). A dial-in client's router limit is only noticed when it is below 1280 (the shared pppd option).
+
 ## Open items
 - The new graphs (1.0.3) only show data since the page was opened (nothing is stored on the server). A stored history would need the collector to keep samples; not built.
 - Old test folders t8, t13, t16, t19 print results as text (no PASS/FAIL words) and t13 needs a `c` folder that no longer exists: read them by eye or skip; t29 covers the web panel.

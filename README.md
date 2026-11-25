@@ -1,4 +1,4 @@
-# l2tp-gw 1.3.0 (stable)
+# l2tp-gw 1.4.0 (stable)
 
 An Ubuntu/Debian server that acts as an **L2TP/IPsec gateway** for MikroTik routers:
 
