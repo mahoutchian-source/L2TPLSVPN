@@ -1,0 +1,9 @@
+#!/bin/bash
+# stub: prints a ping summary. -I = through the tunnel (file qin), otherwise outside (file qout); each holds: loss avg max mdev
+D=$(dirname $0)/..
+echo "ping $*" >> $D/ping.log
+inner=0; for a in "$@"; do [ "$a" = "-I" ] && inner=1; done
+if [ $inner = 1 ]; then f=$D/qin; else f=$D/qout; fi
+read loss avg max mdev < $f 2>/dev/null || { echo "5 packets transmitted, 0 received, 100% packet loss, time 800ms"; exit 1; }
+echo "5 packets transmitted, 5 received, $loss% packet loss, time 800ms"
+echo "rtt min/avg/max/mdev = 1.0/$avg/$max/$mdev ms"

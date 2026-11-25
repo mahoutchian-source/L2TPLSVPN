@@ -1,4 +1,4 @@
-# l2tp-gw 1.0.3 (stable)
+# l2tp-gw 1.1.0 (stable)
 
 An Ubuntu/Debian server that acts as an **L2TP/IPsec gateway** for MikroTik routers:
 
@@ -6,6 +6,8 @@ An Ubuntu/Debian server that acts as an **L2TP/IPsec gateway** for MikroTik rout
 - **Dial-in sites:** routers without a public address dial in to this server (fixed IP per site, routes, NAT, access rules).
 - A **web panel** (dashboard, sites, dial-in, traffic reports, events, routes, health check, backup, settings).
 - A **traffic collector** (usage, limits, auto reconnect) and a **watcher** (Telegram alerts, DDNS check, daily backup).
+
+**For a new Claude session or a new maintainer: read `docs/PROJECT-MEMORY.md` first.**
 
 ## Install (fresh Ubuntu/Debian server, as root)
 

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.0.3"
+VERSION = "1.1.0"
 CONF_DIR = os.environ.get("CONF_DIR", "/etc/l2tp-gw")
 SITES = os.path.join(CONF_DIR, "sites.conf")
 WEB_CONF = os.path.join(CONF_DIR, "web.conf")
@@ -138,7 +138,7 @@ def save_all(sites, cmd="apply"):
 
 # ---------- alert settings (notify.conf is also read by l2tp-gw watch) ----------
 def read_notify():
-    c = {"telegram_token": "", "telegram_chat": "", "down_after_min": "5", "server_name": "", "dns_flush_min": "30", "tg_send_config": "no"}
+    c = {"telegram_token": "", "telegram_chat": "", "down_after_min": "5", "server_name": "", "dns_flush_min": "30", "tg_send_config": "no", "quality_alert": "yes"}
     try:
         for line in open(NOTIFY_CONF):
             if "=" in line and not line.lstrip().startswith("#"):
@@ -155,7 +155,7 @@ def write_notify(c):
     fd = os.open(NOTIFY_CONF, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write("# alert settings, edited by l2tp-gw-web or by hand\n")
-        for k in ("telegram_token", "telegram_chat", "down_after_min", "server_name", "dns_flush_min", "tg_send_config"):
+        for k in ("telegram_token", "telegram_chat", "down_after_min", "server_name", "dns_flush_min", "tg_send_config", "quality_alert"):
             f.write("%s = %s\n" % (k, c[k]))
     os.chmod(NOTIFY_CONF, 0o600)
 
@@ -170,6 +170,8 @@ def check_notify(c):
         return "Alert after (minutes) must be a number from 1 to 1440."
     if not re.fullmatch(r"[0-9]{1,4}", c["dns_flush_min"]) or int(c["dns_flush_min"]) > 1440:
         return "DNS cache flush (minutes) must be a number from 0 to 1440 (0 = never)."
+    if c["quality_alert"] not in ("yes", "no"):
+        return "quality_alert must be yes or no"
     if c["tg_send_config"] not in ("yes", "no"):
         return "Unknown value for sending the settings file."
     if not re.fullmatch(r"[A-Za-z0-9 ._-]{0,40}", c["server_name"]):
@@ -1718,6 +1720,7 @@ a{color:var(--accent)}
 .nav a[href="/routes"]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 4v8a4 4 0 0 0 4 4h8M15 12l4 4-4 4'/%3E%3C/svg%3E")}
 .nav a[href="/check"]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12h4l3-8 4 16 3-8h4'/%3E%3C/svg%3E")}
 .nav a[href="/mtu"]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4'/%3E%3C/svg%3E")}
+.nav a[href="/quality"]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 17l5-6 4 3 4-7 5 5'/%3E%3C/svg%3E")}
 .nav a[href="/backup"]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v12M7 10l5 5 5-5M4 20h16'/%3E%3C/svg%3E")}
 .nav a[href="/settings"]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3Cpath d='M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2'/%3E%3C/svg%3E")}
 .sidefoot{display:flex;align-items:center;gap:6px;padding:10px 4px 0;border-top:1px solid var(--line);margin-top:10px}
@@ -1814,8 +1817,30 @@ legend{font-weight:650;font-size:15px;padding:0 8px 0 0;margin-left:0}
 .reason{font-size:12px;color:var(--mute);margin-top:2px}.state{font-weight:600}.state.up{color:var(--ok)}.state.half{color:var(--warn)}.state.down{color:var(--bad)}.state.noipsec{color:var(--bad)}.state.noipsecok{color:var(--warn)}
 .addr{color:var(--mute);font-size:13px;margin-top:2px}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
+.qlist{display:flex;flex-direction:column;gap:8px}
+.qrow{display:grid;grid-template-columns:minmax(120px,1.3fr) 80px repeat(3,70px) 110px minmax(120px,1.2fr) minmax(110px,1fr);gap:10px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 14px;color:inherit;text-decoration:none}
+.qrow:hover{border-color:var(--accent)}.qrow small{display:block;color:var(--mute);font-size:11.5px}.qname small{font-size:12px}
+.qgrade{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12.5px;font-weight:600;border:1px solid var(--line2);color:var(--mute)}
+.qgrade.ok{border-color:var(--ok);color:var(--ok)}.qgrade.warn{border-color:var(--warn);color:var(--warn)}.qgrade.bad{border-color:var(--bad);color:var(--bad)}
+.qspark{width:100%;height:24px}.qspark polyline{fill:none;stroke:var(--accent);stroke-width:1.6;vector-effect:non-scaling-stroke}
+.qhero{border-left:4px solid var(--line2)}.qhero.ok{border-left-color:var(--ok)}.qhero.warn{border-left-color:var(--warn)}.qhero.bad{border-left-color:var(--bad)}
+.qbig{display:flex;gap:14px;align-items:center}.qbig .qgrade{font-size:16px;padding:4px 16px}.qbig small{display:block;color:var(--mute);margin-top:2px}.diag{margin:10px 0 0;font-size:14px}
+.cgrid{display:grid;grid-template-columns:1fr;gap:14px}@media(min-width:1000px){.cgrid{grid-template-columns:1fr 1fr}.cgrid>.card:nth-child(1),.cgrid>.card:nth-child(2){grid-column:1/-1}}
+.chead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}.tabs{display:flex;gap:4px}
+.tab{padding:2px 10px;border-radius:6px;border:1px solid var(--line2);color:var(--mute);text-decoration:none;font-size:12.5px}.tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.qchart{width:100%;height:150px;display:block;margin-top:8px}.qchart .gr{stroke:var(--line);stroke-width:1}.qchart .dn{fill:var(--line2);opacity:.45}
+.qchart .ls{fill:var(--bad);opacity:.8}.qchart .mx{fill:var(--accent);opacity:.18}.qchart .av{fill:none;stroke:var(--accent);stroke-width:2;vector-effect:non-scaling-stroke}
+.qchart .sd{fill:none;stroke:var(--accent);stroke-width:2;vector-effect:non-scaling-stroke}.qchart .su{fill:none;stroke:var(--ok);stroke-width:2;vector-effect:non-scaling-stroke}
+.qchart .lb,.qchart .nd{fill:var(--mute);font-size:10px}.qchart .nd{font-size:12px}
+.lg{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);margin-top:6px}.lg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.lg .a,.lg .d{background:var(--accent)}.lg .m{background:var(--accent);opacity:.3}.lg .l{background:var(--bad)}.lg .g{background:var(--line2)}.lg .u{background:var(--ok)}
+.qtab{width:100%;border-collapse:collapse;font-size:13px}.qtab th,.qtab td{padding:6px 8px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}.tscroll{overflow-x:auto}
+.qkv{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--line);font-size:13.5px}.qkv span{color:var(--mute)}.qkv b{text-align:right;font-weight:600;word-break:break-word}
+.evlog{white-space:pre-wrap;font-size:12px;margin:0;color:var(--mute)}.acts2{display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:900px){.qrow{grid-template-columns:1fr 1fr}.qsp{display:none}}
 .chip{background:var(--chip);border-radius:6px;padding:1px 8px;font-size:12.5px}
 .chip.tag{background:none;border:1px solid var(--line2);color:var(--mute)}
+.chip.tag.mtuok{border-color:var(--ok);color:var(--ok)}.chip.tag.mtured{border-color:var(--bad);color:var(--bad);background:var(--chip)}.chip.tag.mtubad{border-color:var(--warn);color:var(--warn);background:var(--chip)}
 .none{color:var(--mute);font-size:13px}
 .acts{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}.acts form{margin:0}
 .speed{font-size:13px;margin-top:2px}
@@ -1902,6 +1927,7 @@ svg.spark{width:100%;height:30px;display:block;margin-top:6px}svg.spark:empty{di
 svg.spark path.a{fill:none;stroke:var(--ok);stroke-width:1.6;stroke-linejoin:round}svg.spark path.f{stroke:none;fill:var(--ok);opacity:.14}
 svg.spark.noipsec path.a,svg.spark.down path.a{stroke:var(--bad)}svg.spark.noipsec path.f{fill:var(--bad)}
 svg.spark.noipsecok path.a,svg.spark.half path.a{stroke:var(--warn)}svg.spark.noipsecok path.f,svg.spark.half path.f{fill:var(--warn)}
+.row2{display:flex;gap:14px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}.row2 b{min-width:150px}.row2 .state{margin-left:auto}
 @media (max-width:900px){.top{grid-template-columns:minmax(0,1fr)}}
 @media (prefers-reduced-motion:reduce){.netmap .flow{display:none}.donut .pg{transition:none}}
 
@@ -1951,7 +1977,7 @@ def csrf_of(sid):
     return SESSIONS[sid]["csrf"]
 
 
-NAV = [("/", "Dashboard"), ("/sites", "Sites"), ("/dialin", "Dial-in"), ("/traffic", "Traffic"), ("/events", "Events"), ("/routes", "Routes"), ("/check", "Health check"), ("/mtu", "Measure MTU"), ("/backup", "Backup"), ("/settings", "Settings")]
+NAV = [("/", "Dashboard"), ("/sites", "Sites"), ("/dialin", "Dial-in"), ("/traffic", "Traffic"), ("/quality", "Quality"), ("/events", "Events"), ("/routes", "Routes"), ("/check", "Health check"), ("/mtu", "Measure MTU"), ("/backup", "Backup"), ("/settings", "Settings")]
 
 
 THEME_BOOT = ("try{var t=localStorage.getItem('theme');if(t)document.documentElement.setAttribute('data-theme',t)}catch(e){}")
@@ -1992,6 +2018,7 @@ def same_secret(a, b):
 
 def site_rows(ppp, ipsec):
     e = html.escape
+    MS = mtu_status()
     sites = [x for x in load_sites() if not is_server(x)]
     rows, up_n = "", 0
     st, gen = read_state(), read_general()
@@ -2047,8 +2074,7 @@ def site_rows(ppp, ipsec):
             tags += "<span class='chip tag'>MPPE</span>"
         if ipmode != "heal":
             tags += "<span class='chip tag'>IPsec: %s</span>" % e(ipmode)
-        if s.get("mtu"):
-            tags += "<span class='chip tag'>MTU %s</span>" % e(s["mtu"])
+        tags += mtu_chip(s, MS) + q_chip(n)
         for k, label in (("internet", "no internet"), ("sites", "no other sites"), ("clients", "no dial-in clients")):
             if s.get("access_" + k) == "no":
                 tags += "<span class='chip tag'>%s</span>" % label
@@ -2272,6 +2298,7 @@ def dialin_listening():
 def dialin_list_html(sid):
     """the client list: refreshed every 10 seconds like the Sites page"""
     e = html.escape
+    MS = mtu_status()
     ppp, _ = live_status()
     st, gen = read_state(), read_general()
     unit = gen["unit"]
@@ -2305,6 +2332,7 @@ def dialin_list_html(sid):
         for k, label in (("internet", "no internet"), ("clients", "no other clients"), ("sites", "no outgoing sites")):
             if s.get("access_" + k) == "no":
                 tags += "<span class='chip tag'>%s</span>" % label
+        tags += mtu_chip(s, MS, True) + q_chip(n)
         rows += ("<div class=row><div class='rail %s'></div>"
                  "<div><div class=name>%s</div><div class='host mono'>%s &middot; %s</div></div>"
                  "<div><div class='state %s'>%s</div><div class='addr mono'>%s</div>%s</div>"
@@ -2739,6 +2767,42 @@ def meter(p, cls):
     return "<div class='meter %s'><span style='width:%d%%'></span></div>" % (cls, max(0, min(100, int(p))))
 
 
+def mtu_status():
+    """result of 'l2tp-gw mtu-verify' (run by the watcher every 5 minutes): name -> (state, want, cur); ignored when older than 20 minutes"""
+    out = {}
+    try:
+        for line in open(os.path.join(STATE_DIR, "mtu-status")).read().splitlines():
+            f = line.split()
+            if len(f) == 5 and time.time() - int(f[4]) < 1200:
+                out[f[0]] = (f[1], f[2], f[3])
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def mtu_chip(s, ms, force=False):
+    """the MTU chip of one connection; coloured by the last check: green passes, amber does not pass / the router asks for less"""
+    e = html.escape
+    want = s.get("mtu") or "1280"
+    st = ms.get(s["name"])
+    if not st:
+        return ("<span class='chip tag'>MTU %s</span>" % e(want)) if (s.get("mtu") or force) else ""
+    state, _, cur = st
+    if state == "ok":
+        return "<span class='chip tag mtuok' title='Checked: a packet of this size gets through the tunnel'>MTU %s</span>" % e(want)
+    out = ""
+    if state in ("lowered", "both"):      # problem 1 (amber): the router asked for less than we set
+        out += ("<span class='chip tag mtubad' title='The router asked for a smaller size (its MRU) when the tunnel came up'>"
+                "MTU %s: router allows %s</span>" % (e(want), e(cur)))
+    if state in ("bad", "both"):          # problem 2 (red): even the size the link really uses does not get through
+        size = cur if state == "both" else want
+        out += ("<span class='chip tag mtured' title='A packet of the size the tunnel really uses did NOT get through at the last check. Measure MTU shows what does.'>"
+                "%s does not pass</span>" % ("MTU " + e(size) if state == "bad" else e(size)))
+    if out:
+        return out
+    return "<span class='chip tag' title='The far end does not answer ping, so the size could not be checked'>MTU %s</span>" % e(want)
+
+
 def site_class(s, ppp, ipsec):
     """one word for the state of a tunnel: off, up, noipsec, noipsecok, half, down (dial-in clients: up, wait, off)"""
     n = s["name"]
@@ -3112,28 +3176,46 @@ def mtu_page(sid, msg=None, result=None):
     res = ""
     if result:
         tgt, rc, out, kind, user = result
-        line = ""
+        info_all = []
         for l in out.splitlines():
             if l.startswith("RESULT "):
-                line = l
-        info = dict(re.findall(r"(\w+)=(\S+)", line))
+                info_all.append(dict(re.findall(r"(\w+)=(\S+)", l)))
         text = "\n".join(l for l in out.splitlines() if not l.startswith("RESULT "))
         res = "<div class=chk><div><span>%s</span></div></div>" % e(text).replace("\n", "<br>")
-        sug = int(info.get("suggested", "0") or 0)
-        if rc == 0 and sug >= 576:
-            res += "<p>Suggested MTU: <b class=mono>%d</b> (largest packet that passed: %s, now: %s)</p>" % (sug, e(info.get("max", "?")), e(info.get("current", "?")))
-            if kind in ("site", "client"):
+        kinds = {n: (k, u) for n, k, u, _ in tg}
+        for info in info_all:
+            sug = int(info.get("suggested", "0") or 0)
+            site = info.get("site", "")
+            if sug < 576:
+                continue
+            res += "<p>Way <b class=mono>%s</b>: suggested MTU <b class=mono>%d</b> (inside the tunnel up to %s passed%s, now: %s)</p>" % (
+                e(info.get("dev", "?")), sug, e(info.get("max", "?")),
+                ", outside road %s" % e(info["outer"]) if info.get("outer", "0") != "0" else "", e(info.get("current", "?")))
+            if site in kinds:
+                k, u = kinds[site]
                 res += ("<form method=post action=/mtu/set><input type=hidden name=csrf value='%s'><input type=hidden name=name value='%s'>"
                         "<input type=hidden name=mtu value='%d'><button class='btn pri' data-busy='Applying, please wait...'>Use %d for %s</button></form>"
-                        % (e(csrf_of(sid)), e(tgt), sug, sug, e(tgt)))
-                if kind == "client":
-                    cmd = "/interface l2tp-client set [find user=\"%s\"] max-mtu=%d max-mru=%d" % (user, sug, sug)
-                else:
-                    cmd = "/interface l2tp-server server set max-mtu=%d max-mru=%d" % (sug, sug)
-                res += ("<p class=hint>The same value on the MikroTik (type it in a terminal; both ends should agree):</p>"
+                        % (e(csrf_of(sid)), e(site), sug, sug, e(site)))
+                cmd = ("/interface l2tp-client set [find user=\"%s\"] max-mtu=%d max-mru=%d" % (u, sug, sug)) if k == "client" else \
+                      ("/interface l2tp-server server set max-mtu=%d max-mru=%d" % (sug, sug))
+                res += ("<p class=hint>The same value on the MikroTik (type it in a terminal; both ends should agree; keep mrru off):</p>"
                         "<pre class=mono style='user-select:all'>%s</pre>" % e(cmd))
-            else:
-                res += "<p class=hint>This address is not one of your connections, so nothing is saved. Use the number where you need it.</p>"
+        if info_all and not any(i.get("site") for i in info_all):
+            res += "<p class=hint>This way does not end in one of your connections, so nothing is saved. Use the number where you need it.</p>"
+    ms = mtu_status()
+    trows = ""
+    for n, k, _, mt in tg:
+        st = ms.get(n)
+        if not st:
+            continue
+        lab = {"ok": ("up", "Passes"), "bad": ("noipsec", "Does NOT pass"), "lowered": ("half", "Router allows only %s" % st[2]),
+               "both": ("noipsec", "Router allows only %s, and even that does not pass" % st[2]),
+               "unknown": ("wait", "No answer to ping, cannot check")}.get(st[0], ("wait", st[0]))
+        trows += "<div class=row2><b>%s</b><span class='mono'>MTU %s</span><span class='state %s'>%s</span></div>" % (e(n), e(st[1]), lab[0], e(lab[1]))
+    state_html = ("<fieldset><legend>Does the set MTU really pass? (checked every 5 minutes)</legend>%s"
+                  "<form method=post action=/mtu/verify><input type=hidden name=csrf value='%s'>"
+                  "<button class=btn data-busy='Checking...'>Check now</button></form></fieldset>"
+                  % (trows or "<p class=hint>No result yet. The first check runs within 5 minutes, or press the button.</p>", e(csrf_of(sid))))
     body = ("<div class=bar><div><h1>Measure MTU</h1><div class=sum>Finds the largest packet that passes without being cut. "
             "It only suggests a value; nothing changes until you press the button.</div></div></div>"
             "<form class=form method=post action=/mtu/run autocomplete=off><input type=hidden name=csrf value='%s'>"
@@ -3142,11 +3224,433 @@ def mtu_page(sid, msg=None, result=None):
             "<select id=t1 name=target><option value=''>-</option>%s</select>"
             "<label for=t2>Or any IP address<span class=hint>Example 8.8.8.8 or an address behind a router. Used instead of the choice above when filled.</span></label>"
             "<input type=text id=t2 name=address class=mono placeholder='8.8.8.8'>"
-            "<label for=t3>Through interface (optional)<span class=hint>Only for an address; empty = the way the server would normally send it.</span></label>"
+            "<label for=t3>Force an interface (optional)<span class=hint>Leave empty: the routing table decides the way, like for real traffic.</span></label>"
             "<input type=text id=t3 name=iface class=mono placeholder='ppp-nttlinka'></fieldset>"
-            "<p style='margin-top:18px'><button class='btn pri' data-busy='Measuring, this takes up to a minute...'>Measure</button></p></form>%s"
-            "<p class=note>The same on the server: l2tp-gw mtu-test NAME-or-ADDRESS</p>" % (e(csrf_of(sid)), opts, res))
+            "<p style='margin-top:18px'><button class='btn pri' data-busy='Measuring, this takes up to a minute...'>Measure</button></p></form>%s%s"
+            "<p class=note>The same on the server: l2tp-gw mtu-test NAME-or-ADDRESS</p>" % (e(csrf_of(sid)), opts, res, state_html))
     return page("Measure MTU", body, sid, msg, "/mtu")
+
+
+# ---------- connection quality (data written by "l2tp-gw quality-sample" every minute) ----------
+QUALITY_DIR = os.path.join(STATE_DIR, "quality")
+Q_FAIR = {"loss": 1.0, "rtt": 150.0, "jit": 40.0}      # from here on: fair
+Q_POOR = {"loss": 5.0, "rtt": 400.0, "jit": 120.0}     # from here on: poor (the Telegram alert uses the same numbers)
+_QCACHE = {}
+
+
+def q_read(name):
+    path = os.path.join(QUALITY_DIR, name + ".log")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return []
+    key = (st.st_mtime_ns, st.st_size)
+    c = _QCACHE.get(name)
+    if c and c[0] == key:
+        return c[1]
+    def num(x):
+        return None if x == "-" else float(x)
+    rows = []
+    try:
+        for line in open(path):
+            f = line.split()
+            if len(f) != 11:
+                continue
+            try:
+                rows.append({"t": int(f[0]), "up": f[1] == "up", "loss": num(f[2]), "avg": num(f[3]), "max": num(f[4]), "jit": num(f[5]),
+                             "oloss": num(f[6]), "oavg": num(f[7]), "omax": num(f[8]), "rx": num(f[9]), "tx": num(f[10])})
+            except ValueError:
+                continue
+    except OSError:
+        return []
+    if len(_QCACHE) > 64:
+        _QCACHE.clear()
+    _QCACHE[name] = (key, rows)
+    return rows
+
+
+def q_avg(xs):
+    xs = [x for x in xs if x is not None]
+    return sum(xs) / len(xs) if xs else None
+
+
+def q_max(xs):
+    xs = [x for x in xs if x is not None]
+    return max(xs) if xs else None
+
+
+def q_stats(rows, secs, now=None):
+    """numbers of the last `secs` seconds: loss, delay (average and worst), delay swing, the road outside, speed (average, peak), share of time connected"""
+    now = now or time.time()
+    w = [r for r in rows if r["t"] >= now - secs]
+    ups = [r for r in w if r["up"]]
+    down_bps, up_bps = [], []
+    prev = None
+    for r in w:
+        if r["up"] and prev is not None and prev["up"] and r["rx"] is not None and r["tx"] is not None and prev["rx"] is not None:
+            dt = r["t"] - prev["t"]
+            if 0 < dt <= 200 and r["tx"] >= prev["tx"] and r["rx"] >= prev["rx"]:        # a counter that went back = a new session: skipped
+                down_bps.append((r["tx"] - prev["tx"]) * 8.0 / dt)        # the server sends = the router downloads
+                up_bps.append((r["rx"] - prev["rx"]) * 8.0 / dt)
+        prev = r
+    return {"n": len(w), "n_up": len(ups), "avail": (100.0 * len(ups) / len(w)) if w else None,
+            "loss": q_avg([r["loss"] for r in ups]), "loss_max": q_max([r["loss"] for r in ups]),
+            "rtt": q_avg([r["avg"] for r in ups]), "rtt_max": q_max([r["max"] for r in ups]), "jit": q_avg([r["jit"] for r in ups]),
+            "oloss": q_avg([r["oloss"] for r in ups]), "ortt": q_avg([r["oavg"] for r in ups]),
+            "down_avg": q_avg(down_bps), "down_peak": q_max(down_bps), "up_avg": q_avg(up_bps), "up_peak": q_max(up_bps)}
+
+
+def q_grade(st):
+    """-> (class, word, reasons). class: ok / warn / bad / none"""
+    if st["n_up"] < 3:
+        return "none", "No data yet", []
+    level, why = 0, []
+    for key, label, unit in (("loss", "lost packets", "%"), ("rtt", "average delay", " ms"), ("jit", "delay swing", " ms")):
+        v = st[key]
+        if v is None:
+            continue
+        if v >= Q_POOR[key]:
+            level = max(level, 2); why.append("%s %.0f%s (poor from %.0f%s)" % (label, v, unit, Q_POOR[key], unit))
+        elif v >= Q_FAIR[key]:
+            level = max(level, 1); why.append("%s %.0f%s (fair from %.0f%s)" % (label, v, unit, Q_FAIR[key], unit))
+    if st["loss"] is None and st["rtt"] is None:
+        return "none", "No answer to ping", ["The far end does not answer ping, so the quality cannot be measured."]
+    return ("ok", "Good", why) if level == 0 else (("warn", "Fair", why) if level == 1 else ("bad", "Poor", why))
+
+
+def q_diag(st, grade):
+    if grade in ("ok", "none"):
+        return ""
+    o = st["oloss"]
+    if o is None:
+        return "The road outside the tunnel could not be measured, so it is not clear whether the internet path or the tunnel is the problem."
+    if o >= 2:
+        return ("The road OUTSIDE the tunnel is bad too (%.0f%% lost): the internet path or a filter is the problem, not the tunnel itself." % o)
+    return "The road outside the tunnel is fine, so look INSIDE it: IPsec/L2TP, the packet size (MTU chip) or the load of the router."
+
+
+def q_sessions(rows, now=None):
+    """connected since, last drop, drops in 24 h (a minute is the finest resolution)"""
+    now = now or time.time()
+    flaps, last_drop = 0, None
+    prev = None
+    for r in rows:
+        if prev is not None and prev["up"] and not r["up"]:
+            last_drop = r["t"]
+            if r["t"] >= now - 86400:
+                flaps += 1
+        prev = r
+    since, exact = None, False
+    if rows and rows[-1]["up"]:
+        i = len(rows) - 1
+        while i > 0 and rows[i - 1]["up"]:
+            i -= 1
+        since, exact = rows[i]["t"], i > 0
+    return {"since": since, "exact": exact, "last_drop": last_drop, "flaps": flaps, "have": bool(rows)}
+
+
+def q_dur(secs):
+    secs = int(max(0, secs))
+    d, rem = divmod(secs, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if d:
+        return "%d d %d h" % (d, h)
+    if h:
+        return "%d h %d min" % (h, m)
+    return "%d min" % m
+
+
+def q_bps(x):
+    if x is None:
+        return "-"
+    for unit, div in (("Gb/s", 1e9), ("Mb/s", 1e6), ("Kb/s", 1e3)):
+        if x >= div:
+            return "%.1f %s" % (x / div, unit)
+    return "%d b/s" % x
+
+
+def q_num(x, unit="", dec=0):
+    return "-" if x is None else ("%.*f%s" % (dec, x, unit))
+
+
+def q_buckets(rows, secs, n=96, now=None):
+    now = now or time.time()
+    t0 = now - secs
+    bs = [[] for _ in range(n)]
+    for r in rows:
+        if r["t"] >= t0:
+            bs[min(n - 1, int((r["t"] - t0) * n / secs))].append(r)
+    out = []
+    for b in bs:
+        ups = [r for r in b if r["up"]]
+        out.append({"has": bool(b), "down": bool(b) and not ups, "avg": q_avg([r["avg"] for r in ups]), "max": q_max([r["max"] for r in ups]),
+                    "loss": q_avg([r["loss"] for r in ups])})
+    return out
+
+
+def q_chart(rows, secs, w=640, h=150):
+    """latency (line = average, faint area = worst), lost packets (red bars at the bottom), grey = not connected"""
+    bs = q_buckets(rows, secs)
+    n = len(bs)
+    top = q_max([b["max"] for b in bs]) or 0
+    top = max(top, 50.0)
+    pad_l, pad_b, pad_t = 8, 18, 14
+    ph = h - pad_b - pad_t
+    bw = (w - pad_l) / float(n)
+    def X(i): return pad_l + (i + 0.5) * bw
+    def Y(v): return pad_t + ph - (min(v, top) / top) * ph
+    o = ["<svg class=qchart viewBox='0 0 %d %d' preserveAspectRatio=none role=img aria-label='Delay and lost packets'>" % (w, h)]
+    for k in (0, .5, 1):
+        y = pad_t + ph * k
+        o.append("<line class=gr x1='%d' x2='%d' y1='%.1f' y2='%.1f'/>" % (pad_l, w, y, y))
+    for i, b in enumerate(bs):
+        if b["down"]:
+            o.append("<rect class=dn x='%.1f' y='%d' width='%.1f' height='%d'/>" % (pad_l + i * bw, pad_t, bw + .5, ph))
+        elif b["loss"] and b["loss"] > 0:
+            hh = min(b["loss"], 20.0) / 20.0 * ph * .45
+            o.append("<rect class=ls x='%.1f' y='%.1f' width='%.1f' height='%.1f'/>" % (pad_l + i * bw, pad_t + ph - hh, max(bw - .5, 1), hh))
+    pts = [(X(i), b) for i, b in enumerate(bs) if b["avg"] is not None]
+    if pts:
+        area = " ".join("%.1f,%.1f" % (x, Y(b["max"])) for x, b in pts) + " " + " ".join("%.1f,%.1f" % (x, Y(b["avg"])) for x, b in reversed(pts))
+        o.append("<polygon class=mx points='%s'/>" % area)
+        o.append("<polyline class=av points='%s'/>" % " ".join("%.1f,%.1f" % (x, Y(b["avg"])) for x, b in pts))
+    else:
+        o.append("<text class=nd x='%d' y='%d' text-anchor='middle'>No data in this period yet</text>" % (w // 2, h // 2))
+    o.append("<text class=lb x='%d' y='11'>%d ms</text><text class=lb x='%d' y='%d'>%s ago</text><text class=lb x='%d' y='%d' text-anchor='end'>now</text></svg>"
+             % (pad_l + 2, int(top), pad_l + 2, h - 4, q_dur(secs), w - 2, h - 4))
+    return "".join(o)
+
+
+def q_speed_chart(rows, secs, w=640, h=110):
+    """speed in both directions from the byte counters (average per bucket)"""
+    n = 96
+    now = time.time()
+    t0 = now - secs
+    dn, up = [[] for _ in range(n)], [[] for _ in range(n)]
+    prev = None
+    for r in rows:
+        if r["t"] < t0:
+            prev = r
+            continue
+        if r["up"] and prev is not None and prev["up"] and r["rx"] is not None and r["tx"] is not None and prev["rx"] is not None:
+            dt = r["t"] - prev["t"]
+            if 0 < dt <= 200 and r["tx"] >= prev["tx"] and r["rx"] >= prev["rx"]:
+                i = min(n - 1, int((r["t"] - t0) * n / secs))
+                dn[i].append((r["tx"] - prev["tx"]) * 8.0 / dt)
+                up[i].append((r["rx"] - prev["rx"]) * 8.0 / dt)
+        prev = r
+    da, ua = [q_avg(x) for x in dn], [q_avg(x) for x in up]
+    top = max([v for v in da + ua if v is not None] + [1e5])
+    pad_l, pad_b, pad_t = 8, 18, 14
+    ph = h - pad_b - pad_t
+    bw = (w - pad_l) / float(n)
+    def line(vals, cls):
+        pts = ["%.1f,%.1f" % (pad_l + (i + .5) * bw, pad_t + ph - (v / top) * ph) for i, v in enumerate(vals) if v is not None]
+        return "<polyline class=%s points='%s'/>" % (cls, " ".join(pts)) if len(pts) > 1 else ""
+    o = ["<svg class=qchart viewBox='0 0 %d %d' preserveAspectRatio=none role=img aria-label='Speed'>" % (w, h)]
+    for k in (0, .5, 1):
+        y = pad_t + ph * k
+        o.append("<line class=gr x1='%d' x2='%d' y1='%.1f' y2='%.1f'/>" % (pad_l, w, y, y))
+    body = line(da, "sd") + line(ua, "su")
+    o.append(body or "<text class=nd x='%d' y='%d' text-anchor='middle'>No traffic measured in this period yet</text>" % (w // 2, h // 2))
+    o.append("<text class=lb x='%d' y='11'>%s</text></svg>" % (pad_l + 2, q_bps(top)))
+    return "".join(o)
+
+
+def q_spark(rows, secs=3600):
+    bs = q_buckets(rows, secs, 30)
+    vals = [b["avg"] for b in bs]
+    top = max([v for v in vals if v is not None] + [50.0])
+    pts = ["%.1f,%.1f" % (i * 100.0 / 29, 22 - (v / top) * 20) for i, v in enumerate(vals) if v is not None]
+    return ("<svg class=qspark viewBox='0 0 100 24' preserveAspectRatio=none><polyline points='%s'/></svg>" % " ".join(pts)) if len(pts) > 1 else ""
+
+
+def q_chip(name):
+    """small chip for the Sites / Dial-in lists: the grade of the last 5 minutes, a link to the connection page"""
+    st = q_stats(q_read(name), 300)
+    cls, word, _ = q_grade(st)
+    if cls == "none":
+        return ""
+    c = {"ok": "mtuok", "warn": "mtubad", "bad": "mtured"}[cls]
+    return "<a class='chip tag %s' href='/conn?name=%s' title='Last 5 minutes: %s lost, %s delay. Click for details.'>Quality: %s</a>" % (
+        c, html.escape(name), q_num(st["loss"], "%", 1), q_num(st["rtt"], " ms"), word)
+
+
+def conn_dev(s):
+    if not is_server(s):
+        return "ppp-" + s["name"]
+    rc, out = run(["ip", "-o", "-4", "addr", "show"], 10)
+    for line in out.splitlines():
+        m = re.search(r"^\d+:\s+(ppp\S*)\s.*\speer\s+(\d+\.\d+\.\d+\.\d+)", line)
+        if m and m.group(2) == s.get("ip"):
+            return m.group(1)
+    return ""
+
+
+def ipsec_info(name, server):
+    """what strongSwan says about the IPsec of this tunnel: age and ciphers (best effort, empty when not found)"""
+    rc, out = run(["ipsec", "statusall"], 10)
+    if rc != 0:
+        return {}
+    n = "l2tp-gw-dialin" if server else re.escape(name)
+    info = {}
+    m = re.search(r"^\s*%s\[\d+\]: ESTABLISHED (.+?) ago" % n, out, re.M)
+    if m:
+        info["age"] = m.group(1)
+    m = re.search(r"^\s*%s\[\d+\]: IKE proposal: (\S+)" % n, out, re.M)
+    if m:
+        info["ike"] = m.group(1)
+    m = re.search(r"^\s*%s\{\d+\}:\s+((?:AES|3DES|CHACHA|CAMELLIA)\S*)" % n, out, re.M)
+    if m:
+        info["esp"] = m.group(1)
+    return info
+
+
+def quality_page(sid, msg=None):
+    e = html.escape
+    sites = [x for x in load_sites() if x.get("disabled") != "yes"]
+    ms = mtu_status()
+    rows_html, cnt = "", {"ok": 0, "warn": 0, "bad": 0, "none": 0}
+    now = time.time()
+    for s in sites:
+        n = s["name"]
+        rows = q_read(n)
+        st5, st1h = q_stats(rows, 300, now), q_stats(rows, 3600, now)
+        cls, word, _ = q_grade(st5)
+        cnt[cls] += 1
+        ses = q_sessions(rows, now)
+        if ses["since"]:
+            up_txt = ("%s%s" % ("" if ses["exact"] else "over ", q_dur(now - ses["since"])))
+        else:
+            up_txt = "not connected"
+        rows_html += ("<a class='qrow' href='/conn?name=%s'><div class=qname><b>%s</b><small>%s</small></div>"
+                      "<div><span class='qgrade %s'>%s</span></div>"
+                      "<div><b>%s</b><small>lost</small></div><div><b>%s</b><small>delay</small></div><div><b>%s</b><small>swing</small></div>"
+                      "<div class=qsp>%s</div>"
+                      "<div><b>&darr; %s</b><small>&uarr; %s &middot; 1 h average</small></div>"
+                      "<div><b>%s</b><small>drops in 24 h: %s</small></div></a>"
+                      % (e(n), e(n), "dial-in client" if is_server(s) else "outgoing site", cls, e(word),
+                         q_num(st5["loss"], "%", 1), q_num(st5["rtt"], " ms"), q_num(st5["jit"], " ms"),
+                         q_spark(rows), q_bps(st1h["down_avg"]), q_bps(st1h["up_avg"]), e(up_txt), ses["flaps"]))
+    if not sites:
+        rows_html = "<div class=empty><p>No connections yet.</p></div>"
+    elif not any(q_read(s["name"]) for s in sites):
+        rows_html = ("<div class=empty><p><b>No measurements yet</b></p><p>The first numbers appear within a minute or two "
+                     "(the watcher measures every minute). Update the server programs and run <code>l2tp-gw apply</code> once if this stays empty.</p></div>")
+    summ = "%d good &middot; %d fair &middot; %d poor &middot; %d not measured (last 5 minutes)" % (cnt["ok"], cnt["warn"], cnt["bad"], cnt["none"])
+    body = ("<div class=bar><div><h1>Quality</h1><div class=sum>%s</div></div></div>"
+            "<div class='list qlist'>%s</div>"
+            "<p class=note>Every minute five quick pings go through each tunnel and, to tell the cause apart, through the road outside it. "
+            "Good = under 1%% lost, under 150 ms delay and a swing under 40 ms. Poor = 5%% lost, 400 ms or a 120 ms swing. "
+            "Click a connection for the graphs, the speed, the security state and the packet size.</p>" % (summ, rows_html))
+    return page("Quality", body, sid, msg, "/quality")
+
+
+def conn_page(sid, name, win="6h", msg=None):
+    e = html.escape
+    s = next((x for x in load_sites() if x["name"] == name), None)
+    if s is None:
+        return page("Connection", "<div class=bar><h1>Unknown connection</h1></div><p><a class=btn href=/quality>Back to Quality</a></p>", sid, (False, "No connection named '%s'." % name), "/quality")
+    wins = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
+    if win not in wins:
+        win = "6h"
+    now = time.time()
+    rows = q_read(name)
+    server = is_server(s)
+    ppp, ipsec = live_status()
+    off = s.get("disabled") == "yes"
+    up = name in ppp and not off
+    ipsec_up = bool(re.search(r"(^|\s)%s(\[\d+\]: ESTABLISHED|\{\d+\}:\s+INSTALLED)" % re.escape(name), ipsec or ""))
+    st5 = q_stats(rows, 300, now)
+    cls, word, why = q_grade(st5)
+    diag = q_diag(st5, cls)
+    ses = q_sessions(rows, now)
+    # --- header
+    sub = ("dial-in client, fixed address %s" % e(s.get("ip", "?"))) if server else ("outgoing site, router %s" % e(s.get("host", "?")))
+    state = ("<span class='state off'>Switched off</span>" if off else ("<span class='state up'>Connected</span>" if up else "<span class='state down'>Not connected</span>"))
+    head = ("<div class=bar><div><h1>%s</h1><div class=sum>%s &middot; %s</div></div>"
+            "<div class=acts2><a class=btn href='/quality'>All connections</a><a class=btn href='/%s'>Edit</a><a class=btn href='/mtu'>Measure MTU</a></div></div>"
+            % (e(name), sub, state, ("dialin/edit?name=" if server else "edit?name=") + e(name)))
+    verdict = ("<div class='card qhero %s'><div class=qbig><span class='qgrade %s'>%s</span>"
+               "<div><b>Last 5 minutes: %s lost, %s delay (worst %s), swing %s</b>%s</div></div>%s</div>"
+               % (cls, cls, e(word), q_num(st5["loss"], "%", 1), q_num(st5["rtt"], " ms"), q_num(st5["rtt_max"], " ms"), q_num(st5["jit"], " ms"),
+                  ("<small>%s</small>" % e("; ".join(why))) if why else "", ("<p class=diag>%s</p>" % e(diag)) if diag else ""))
+    # --- table of periods
+    trs = ""
+    for label, secs in (("5 minutes", 300), ("1 hour", 3600), ("24 hours", 86400), ("7 days", 604800)):
+        t = q_stats(rows, secs, now)
+        g = q_grade(t)[0]
+        trs += ("<tr><th>%s</th><td><span class='dot %s'></span></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+                % (label, g, q_num(t["loss"], "%", 1), q_num(t["rtt"], " ms"), q_num(t["rtt_max"], " ms"),
+                   q_num(t["jit"], " ms"), q_num(t["oloss"], "%", 1) if t["oloss"] is not None else "-",
+                   "%s / %s" % (q_bps(t["down_avg"]), q_bps(t["down_peak"])), "%s / %s" % (q_bps(t["up_avg"]), q_bps(t["up_peak"])),
+                   q_num(t["avail"], "%", 1)))
+    table = ("<div class=card><h2>Numbers by period</h2><div class=tscroll><table class=qtab><thead><tr><th></th><th></th><th>Lost</th><th>Delay</th><th>Worst delay</th><th>Swing</th>"
+             "<th>Lost outside</th><th>Download avg / peak</th><th>Upload avg / peak</th><th>Connected</th></tr></thead><tbody>%s</tbody></table></div>"
+             "<p class=hint>Outside = pings that do not go through the tunnel, to the router's own address. Download/upload are seen from the router. "
+             "Peaks are the busiest minute, not the top speed the line can do.</p></div>" % trs)
+    # --- charts
+    tabs = "".join("<a class='tab%s' href='/conn?name=%s&w=%s'>%s</a>" % (" on" if k == win else "", e(name), k, k) for k in wins)
+    charts = ("<div class=card><div class=chead><h2>Delay and lost packets</h2><div class=tabs>%s</div></div>%s"
+              "<div class=lg><span><i class=a></i>Average delay</span><span><i class=m></i>Worst delay</span><span><i class=l></i>Lost packets</span><span><i class=g></i>Not connected</span></div>"
+              "<h2 style='margin-top:18px'>Speed</h2>%s<div class=lg><span><i class=d></i>Download</span><span><i class=u></i>Upload</span></div></div>"
+              % (tabs, q_chart(rows, wins[win]), q_speed_chart(rows, wins[win])))
+    # --- security and link
+    ii = ipsec_info(name, server) if (up or ipsec_up) else {}
+    if off:
+        enc = "off"
+    elif up and (ipsec_up or server) and ipsec is not None:
+        enc = "IPsec" + (" + MPPE" if s.get("mppe") == "yes" else "")
+    elif up and ipsec is not None and not ipsec_up:
+        enc = "NONE (plain L2TP)"
+    else:
+        enc = "-"
+    dev = conn_dev(s) if up else ""
+    cur = ""
+    if dev:
+        try:
+            cur = open(os.path.join(SYS_NET, dev, "mtu")).read().strip()
+        except OSError:
+            cur = ""
+    ms = mtu_status()
+    mchip = mtu_chip(s, ms, True)
+    mru = ""
+    if cur and s.get("mtu") or cur:
+        want = s.get("mtu") or "1280"
+        if cur and cur.isdigit() and int(cur) < int(want):
+            mru = " The router asked for a smaller size (its MRU) when the tunnel came up: %s." % cur
+    sec_rows = [("Encryption", enc), ("IPsec", ("up for %s" % ii["age"]) if ii.get("age") else ("up" if ipsec_up else ("shared by all dial-in clients" if server else "-"))),
+                ("IPsec ciphers", " / ".join(x for x in (ii.get("ike"), ii.get("esp")) if x) or "-"),
+                ("IPsec rule", s.get("ipsec_mode") or "heal") if not server else ("PPP login", "user %s" % s.get("user", "?")),
+                ("Interface", dev or "-"), ("Address", ppp.get(name, "-").replace(" peer ", " to ")),
+                ("MTU set / link now", "%s / %s" % (s.get("mtu") or "1280 (default)", cur or "-"))]
+    sec = "".join("<div class=qkv><span>%s</span><b>%s</b></div>" % (e(k), e(v)) for k, v in sec_rows)
+    link = ("<div class=card><h2>Security and link</h2>%s<div class=qkv><span>Packet size check</span><b>%s</b></div><p class=hint>%s</p>"
+            "<div class=qkv><span>Routes</span><b>%s</b></div></div>"
+            % (sec, mchip or "not checked yet", e(mru.strip()) if mru else "A green chip means a packet of the set size really gets through; the check runs every 5 minutes.",
+               e(s.get("routes") or "none")))
+    # --- history
+    if ses["since"]:
+        conn_txt = "%s%s (since %s)" % ("" if ses["exact"] else "over ", q_dur(now - ses["since"]), time.strftime("%d %b %H:%M", time.gmtime(ses["since"])) + " UTC")
+    else:
+        conn_txt = "not connected now"
+    drop = ("%s UTC" % time.strftime("%d %b %H:%M", time.gmtime(ses["last_drop"]))) if ses["last_drop"] else "none in the data"
+    hist = ("<div class=card><h2>Connection history</h2><div class=qkv><span>Connected for</span><b>%s</b></div>"
+            "<div class=qkv><span>Last drop</span><b>%s</b></div><div class=qkv><span>Drops in 24 hours</span><b>%d</b></div>"
+            "<div class=qkv><span>Measured since</span><b>%s</b></div>%s</div>"
+            % (e(conn_txt), e(drop), ses["flaps"], e(time.strftime("%d %b %H:%M", time.gmtime(rows[0]["t"])) + " UTC") if rows else "-", ""))
+    ev = []
+    try:
+        for line in open(os.path.join(STATE_DIR, "watch.log")).read().splitlines()[-200:]:
+            if re.search(r"(^|\s)%s(\s|$)" % re.escape(name), line):
+                ev.append(line)
+    except OSError:
+        pass
+    evh = ("<div class=card><h2>Recent events of this connection</h2>%s</div>"
+           % ("<pre class=evlog>%s</pre>" % e("\n".join(ev[-12:])) if ev else "<p class=hint>Nothing noted for this connection in the watcher log.</p>"))
+    body = head + verdict + "<div class=cgrid>" + charts + table + link + hist + "</div>" + evh
+    return page("Connection " + name, body, sid, msg, "/quality")
 
 
 def check_page(sid, msg=None):
@@ -3249,6 +3753,8 @@ def settings_page(sid, msg=None, vals=None):
             "<label for=min>Alert after (minutes down)</label><input type=text id=min name=down_after_min value='%s' class=mono>"
             "<label for=srv>Server name in messages<span class=hint>Optional, to tell servers apart.</span></label>"
             "<input type=text id=srv name=server_name value='%s'>"
+            "<label class=chk><input type=checkbox name=quality_alert value=yes%s> Also send a message when the quality of a connection is poor for 5 minutes (and when it is good again)</label>"
+            "<span class=hint>Poor = 5%% or more lost packets, or an average delay of 400 ms or more, or a delay swing of 120 ms or more. The message also says whether the road outside the tunnel is the problem.</span>"
             "<label class=chk><input type=checkbox name=tg_send_config value=yes%s> Send the settings file to Telegram every time it changes</label>"
             "<span class=hint>Needs the bot above. The file contains ALL passwords and the IPsec secret, and Telegram is not end-to-end encrypted: "
             "use a private chat that only you can read. One message is sent after you stop editing for a minute.</span></fieldset>"
@@ -3260,7 +3766,7 @@ def settings_page(sid, msg=None, vals=None):
             "<p>Sends one test message with the saved settings.</p><button class=btn>Send test message</button></form>"
             % (e(csrf_of(sid)), "A token is saved. Leave empty to keep it." if c["telegram_token"] else "No token saved.",
                "unchanged" if c["telegram_token"] else "", e(c["telegram_chat"]), e(c["down_after_min"]), e(c["server_name"]),
-               " checked" if c["tg_send_config"] == "yes" else "", e(c["dns_flush_min"]), e(csrf_of(sid))))
+               " checked" if c["quality_alert"] == "yes" else "", " checked" if c["tg_send_config"] == "yes" else "", e(c["dns_flush_min"]), e(csrf_of(sid))))
     g = read_general()
     known = [v for v, _ in TZ_CHOICES]
     tzopts = options(TZ_CHOICES + [("__custom__", "Other (type below)")], g["timezone"] if g["timezone"] in known else "__custom__")
@@ -3732,6 +4238,10 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.send(200, edit_page(sid, q.get("name", [None])[0]))
         if u.path == "/check":
             return self.send(200, check_page(sid, FLASH.pop(sid, None)))
+        if u.path == "/quality":
+            return self.send(200, quality_page(sid, FLASH.pop(sid, None)))
+        if u.path == "/conn":
+            return self.send(200, conn_page(sid, q.get("name", [""])[0], q.get("w", ["6h"])[0], FLASH.pop(sid, None)))
         if u.path == "/mtu":
             return self.send(200, mtu_page(sid, FLASH.pop(sid, None)))
         if u.path == "/logs":
@@ -3875,6 +4385,8 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.mtu_run(sid, f)
         if u.path == "/mtu/set":
             return self.mtu_set(sid, f)
+        if u.path == "/mtu/verify":
+            return self.mtu_verify(sid, f)
         if u.path in ("/dialin/delete", "/dialin/toggle", "/dialin/disconnect"):
             return self.dialin_change(sid, f, u.path.rsplit("/", 1)[1])
         if u.path == "/reconnect":
@@ -3912,6 +4424,7 @@ class H(http.server.BaseHTTPRequestHandler):
                    "down_after_min": f.get("down_after_min", "").strip(),
                    "server_name": f.get("server_name", "").strip(),
                    "dns_flush_min": f.get("dns_flush_min", "").strip(),
+                   "quality_alert": "yes" if f.get("quality_alert") == "yes" else "no",
                    "tg_send_config": "yes" if f.get("tg_send_config") == "yes" else "no"}
             err = check_notify(new)
             if err:
@@ -4099,6 +4612,12 @@ class H(http.server.BaseHTTPRequestHandler):
         with LOCK:
             rc, out = run(cmd, 150)
         return self.send(200, mtu_page(sid, result=(shown, rc, out, kind, user)))
+
+    def mtu_verify(self, sid, f):
+        with LOCK:
+            rc, out = run([GW, "mtu-verify"], 90)
+        FLASH[sid] = (True, "Checked.") if rc == 0 else (False, "The check failed: " + out[-300:])
+        return self.redirect("/mtu")
 
     def mtu_set(self, sid, f):
         name, val = f.get("name", ""), f.get("mtu", "").strip()

@@ -5,7 +5,7 @@ gen(){ # gen SCRIPT OUTDIR
   echo "include $2/ipd/*.conf" > $2/ipsec.conf
   cat > $2/c/sites.conf <<'S'
 [nttlinka]
-host = 44.44.97.217
+host = 5.160.97.217
 psk = p1
 user = u1
 pass = w1

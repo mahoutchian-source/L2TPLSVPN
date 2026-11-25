@@ -7,7 +7,7 @@ rm -f st/*; : > curl.log
 # real output seen on the server: site "only" has NO IKE line, only a child SA under another site's IKE SA
 cat > ipsec.status <<'EOT'
 Security Associations (1 up, 0 connecting):
-    first[48]: ESTABLISHED 2 hours ago, 172.26.2.106[172.26.2.106]...44.44.97.217[44.44.97.217]
+    first[48]: ESTABLISHED 2 hours ago, 172.26.2.106[172.26.2.106]...5.160.97.217[5.160.97.217]
     first{304}:  INSTALLED, TRANSPORT, reqid 3, ESP in UDP SPIs: c818da75_i db18bec4_o
     only{305}:  INSTALLED, TRANSPORT, reqid 3, ESP in UDP SPIs: cfafae39_i a45ea292_o
 EOT

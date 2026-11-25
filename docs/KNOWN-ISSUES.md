@@ -30,3 +30,5 @@
 - nano adds one trailing newline when a patch file is pasted -> size and md5 are checked as "file + 1 byte".
 - Helper `sed -n 1,16p run.sh` started a test web server by accident -> read test headers with lines 1-13.
 - A site removed from `sites.conf` used to lose its traffic history -> now archived (Traffic > Archive).
+
+- Quality (1.1.0): ping measures delay and loss, not the top speed; the speed numbers are what users really used. A router that does not answer ping shows "No answer to ping" and no grade. History is kept 7 days (one line per minute).

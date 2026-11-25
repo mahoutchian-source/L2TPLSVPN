@@ -18,7 +18,7 @@ def ours(): return sh("ip -4 route show table main proto 98")
 
 sh("ip link set lo up; ip tuntap add dev ens5 mode tun; ip addr add 172.26.2.106/20 dev ens5; ip link set ens5 up")
 sh("ip tuntap add dev ppp-a mode tun; ip addr add 172.17.218.3 peer 172.17.192.3 dev ppp-a; ip link set ppp-a up")
-open(base + "/c/sites.conf", "w").write("[a]\nhost = 44.44.97.217\npsk = x\nuser = u\npass = p\n")
+open(base + "/c/sites.conf", "w").write("[a]\nhost = 5.160.97.217\npsk = x\nuser = u\npass = p\n")
 gw.rt_write_list("one", "10.50.0.0/24\n")
 gw.atomic_write(gw.RT_RULES, "one via 172.17.192.3 metric 5\n")
 gw.rt_apply(gw.rt_compute())

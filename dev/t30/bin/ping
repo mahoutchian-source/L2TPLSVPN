@@ -1,8 +1,9 @@
 #!/bin/bash
-# stub: answers when -s SIZE is not above the limit in ../pinglimit (payload bytes); -M do means no fragmentation; logs the call
+# stub: answers when -s SIZE is not above a limit (payload bytes); -M do means no fragmentation; logs the call
+# with -I (through a tunnel interface) the limit is in ../pinglimit; without -I (the outside road) it is in ../pingouter
 D=$(dirname $0)/..
 echo "ping $*" >> $D/ping.log
-size=56; prev=""
-for a in "$@"; do [ "$prev" = "-s" ] && size=$a; prev=$a; done
-limit=$(cat $D/pinglimit 2>/dev/null || echo 1472)
+size=56; prev=""; inner=0
+for a in "$@"; do [ "$prev" = "-s" ] && size=$a; [ "$a" = "-I" ] && inner=1; prev=$a; done
+if [ $inner = 1 ]; then limit=$(cat $D/pinglimit 2>/dev/null || echo 1472); else limit=$(cat $D/pingouter 2>/dev/null || echo 1472); fi
 [ "$size" -le "$limit" ]

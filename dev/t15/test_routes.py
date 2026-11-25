@@ -25,7 +25,7 @@ sh("ip tuntap add dev ens5 mode tun; ip addr add 172.26.2.106/20 dev ens5; ip li
 for n, peer in (("a", "172.17.192.3"), ("b", "172.17.192.3"), ("c", "172.17.1.3")):
     sh("ip tuntap add dev ppp-%s mode tun; ip addr add 172.17.218.3 peer %s dev ppp-%s; ip link set ppp-%s up" % (n, peer, n, n))
 open(base + "/c/sites.conf", "w").write("".join("[%s]\nhost = %s\npsk = x\nuser = u\npass = p\n" % (n, h) for n, h in
-    (("a", "44.44.97.217"), ("b", "44.44.97.217"), ("c", "45.45.239.215"))))
+    (("a", "5.160.97.217"), ("b", "5.160.97.217"), ("c", "2.176.239.215"))))
 
 # ---- entry parsing
 P = gw.parse_entry
@@ -90,7 +90,7 @@ sh("ip route add 192.0.2.0/24 dev ppp-a metric 7"); gw.rt_apply(gw.rt_compute())
 ok("route of another origin untouched", "192.0.2.0/24 dev ppp-a metric 7" in norm(sh("ip -4 route show table main")))
 
 # ---- protections
-gw.rt_write_list("wide", "172.26.0.0/16\n8.8.0.0/16\n44.44.97.0/24\n")        # server network, normal, site endpoint inside
+gw.rt_write_list("wide", "172.26.0.0/16\n8.8.0.0/16\n5.160.97.0/24\n")        # server network, normal, site endpoint inside
 open(gw.RT_RULES, "w").write("wide via 172.17.1.3@c metric 3\nprotect 8.8.8.8\n")
 gw.rt_note_viewer("8.8.4.4")
 res = gw.rt_compute(); d = res["desired"]
@@ -99,7 +99,7 @@ def covered(ip): return any(ipaddress.IPv4Address(ip) in n for n in pref)
 ok("server network is not routed", not covered("172.26.2.106") and not covered("172.26.1.1"))
 ok("protected /32 cut out of 8.8.0.0/16", not covered("8.8.8.8") and covered("8.8.7.255") and covered("8.8.9.0"))
 ok("web viewer address cut out", not covered("8.8.4.4"))
-ok("site endpoint 44.44.97.217 cut out of the /24", not covered("44.44.97.217") and covered("44.44.97.216") and covered("44.44.97.218"))
+ok("site endpoint 5.160.97.217 cut out of the /24", not covered("5.160.97.217") and covered("5.160.97.216") and covered("5.160.97.218"))
 ok("warnings mention protection", any("protected" in w for w in res["warnings"]), res["warnings"])
 ok("cut /16 is split into few routes", 0 < len(d) < 120, len(d))
 gw.rt_apply(res)

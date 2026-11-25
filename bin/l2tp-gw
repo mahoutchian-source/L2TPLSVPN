@@ -35,7 +35,7 @@ set -euo pipefail
 : "${XL2TPD_CONF:=/etc/xl2tpd/xl2tpd.conf}"
 : "${SECRETS:=/etc/ipsec.secrets}"
 : "${NO_RESTART:=0}"
-VERSION="1.0.3"
+VERSION="1.1.0"
 SITES="$CONF_DIR/sites.conf"
 DIALIN="${DIALIN_FILE:-$CONF_DIR/dialin.conf}"      # settings of the dial-in server (see "dial-in" below)
 TAG="# managed by l2tp-gw"
@@ -769,6 +769,7 @@ cmd_dialin_sync() {
   apply_require_fw
   apply_client_access
   kick_unwanted || true
+  write_route_hooks 2>/dev/null || true     # an update may have changed the hooks (e.g. mtu-apply); this is cheap and touches no tunnel
   cmd_mtu_apply "" || true
   cmd_routes_sync "" up
   if [ -f "$STATE_DIR/dialin.applied" ] && [ "$(cat "$STATE_DIR/dialin.applied")" != "$(dialin_hash)" ]; then
@@ -1279,63 +1280,180 @@ mtu_apply_cb() {
 }
 cmd_mtu_apply() { MTU_ONLY=${1:-}; for_each_site mtu_apply_cb; MTU_ONLY=""; }
 
-mtu_find_cb() {      # finds the tunnel interface and the far address of site MTU_NAME
-  [ "$S_NAME" = "$MTU_NAME" ] || return 0
-  if [ "$S_MODE" = server ]; then MTU_DEV=$(ifc_by_peer "$S_IP"); MTU_ADDR=$S_IP
+mtu_find_cb() {      # finds the tunnel interface and the far address of site MTU_NAME (or of the site that owns interface MTU_BYDEV)
+  local dev addr
+  if [ "$S_MODE" = server ]; then dev=$(ifc_by_peer "$S_IP"); addr=$S_IP
   else
-    MTU_DEV="ppp-$S_NAME"
-    MTU_ADDR=$(ip -o -4 addr show dev "$MTU_DEV" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="peer"){sub("/.*","",$(i+1)); print $(i+1); exit}}')
+    dev="ppp-$S_NAME"
+    addr=$(ip -o -4 addr show dev "$dev" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="peer"){sub("/.*","",$(i+1)); print $(i+1); exit}}')
   fi
+  if [ -n "${MTU_NAME:-}" ]; then [ "$S_NAME" = "$MTU_NAME" ] || return 0
+  else [ -n "$dev" ] && [ "$dev" = "${MTU_BYDEV:-}" ] || return 0; fi
+  MTU_DEV=$dev; MTU_ADDR=$addr; MTU_SITE=$S_NAME; MTU_OUTER=""
+  if [ "$S_MODE" = server ]; then      # public address of the router: only when exactly one dial-in client is connected over IPsec
+    MTU_OUTER=$(ipsec status 2>/dev/null | sed -n 's/^l2tp-gw-dialin\[[0-9]*\]: ESTABLISHED.*\.\.\.\([0-9.]*\)\[.*/\1/p' | sort -u)
+    [ "$(printf '%s\n' "$MTU_OUTER" | grep -c .)" = 1 ] || MTU_OUTER=""
+  else
+    MTU_OUTER=$S_HOST; is_ipv4 "$MTU_OUTER" || MTU_OUTER=$(resolve_v4 "$MTU_OUTER")
+  fi
+  MTU_WANT=${S_MTU:-1280}
   MTU_FOUND=1
 }
 
+# route_devs ADDRESS: what the routing table says about ADDRESS: "PREFIX METRIC DEV [DEV ...]" (several DEV = a multipath route,
+# the traffic is shared between them). The most specific route wins, like in the kernel. Empty when it cannot be read.
+route_devs() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  ip -j route show to match "$1" 2>/dev/null | python3 -c '
+import json, sys
+try: rs = json.load(sys.stdin)
+except Exception: sys.exit(0)
+def plen(r):
+    d = r.get("dst", "default")
+    return 0 if d == "default" else int(d.split("/")[1]) if "/" in d else 32
+best = None
+for r in rs:
+    if r.get("type", "unicast") != "unicast": continue
+    k = (plen(r), -int(r.get("metric", 0)))
+    if best is None or k > best[0]: best = (k, r)
+if best:
+    r = best[1]
+    devs = [n["dev"] for n in r.get("nexthops", []) if "dev" in n] or ([r["dev"]] if "dev" in r else [])
+    print(r.get("dst", "default"), r.get("metric", 0), *devs)
+' 2>/dev/null
+}
+
 # mtu-test NAME|ADDRESS [IFACE]: the biggest packet (DF set, no fragmentation) that gets an answer, found by halving.
-# NAME = a connected site (the far end of its tunnel); ADDRESS = any address (through the route the server uses, or IFACE).
+# NAME    = a connected site: its tunnel, and the road to its router.
+# ADDRESS = any address: the routing table says which tunnel (or the internet) it leaves through, each way of a multipath route is
+#           measured on its own; if that way is a tunnel of ours, the road to the router and the router's own limit count too.
+# IFACE   = (optional, only with an address) force one interface instead of asking the routing table.
 # A ppp link is raised to 1500 for the test and put back afterwards. Nothing in the settings is changed.
-# Last line:  RESULT addr=A dev=D current=N max=M suggested=S      (max = size of the biggest packet that passed)
+# One line per way:  RESULT addr=A dev=D current=N max=M suggested=S inner=I outer=O lowered=L [site=NAME] [prefix=P]
 cmd_mtu_test() {
   need_root
-  local target=${1:-} via=${2:-} addr="" dev="" cur lo hi mid payload=56 raised=0 pinger_dev=()
+  local target=${1:-} via=${2:-} addr="" dev="" pfx="" metric="" devs=() d rc=0
   [ -n "$target" ] || die "Usage: l2tp-gw mtu-test SITE_NAME|ADDRESS [INTERFACE]"
   command -v ping >/dev/null 2>&1 || die "ping is not installed (apt-get install iputils-ping)"
   if is_ipv4 "$target"; then
     addr=$target
-    dev=${via:-$(ip route get "$addr" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1)}
-  else
-    MTU_NAME=$target; MTU_FOUND=""; MTU_DEV=""; MTU_ADDR=""
-    for_each_site mtu_find_cb
-    [ -n "$MTU_FOUND" ] || die "No site named '$target' (use a site name or an IPv4 address)"
-    addr=$MTU_ADDR; dev=${via:-$MTU_DEV}
-    [ -n "$dev" ] && iface_up "$dev" && [ -n "$addr" ] || die "Site '$target' is not connected: nothing to measure"
+    if [ -n "$via" ]; then devs=("$via"); echo "Path: you chose the interface $via (the routing table is not asked)."
+    else
+      local rd rest=""
+      rd=$(route_devs "$addr"); read -r pfx metric rest <<< "$rd"
+      if [ -n "$rest" ]; then read -r -a devs <<< "$rest"
+      else devs=("$(ip route get "$addr" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1)"); pfx="?"; fi
+      [ -n "${devs[0]:-}" ] || die "No route to $addr"
+      echo "Path: the routing table sends $addr by the route $pfx (metric ${metric:-0}) through: ${devs[*]}."
+      [ "${#devs[@]}" -lt 2 ] || echo "This is a multipath route: the traffic is shared between these ways, so each one is measured on its own."
+    fi
+    for d in "${devs[@]}"; do mtu_measure "$addr" "$d" "" "$pfx" || rc=1; done
+    return $rc
   fi
-  [ -n "$dev" ] || die "No route to $addr"
-  [ -z "$via" ] || [ -n "$dev" ] || true
-  pinger_dev=(-I "$dev")
-  if [ -z "$via" ] && is_ipv4 "$target"; then pinger_dev=(); fi
+  MTU_NAME=$target; MTU_BYDEV=""; MTU_FOUND=""; MTU_DEV=""; MTU_ADDR=""; MTU_OUTER=""; MTU_WANT=""; MTU_SITE=""
+  for_each_site mtu_find_cb
+  [ -n "$MTU_FOUND" ] || die "No site named '$target' (use a site name or an IPv4 address)"
+  [ -n "$MTU_DEV" ] && iface_up "$MTU_DEV" && [ -n "$MTU_ADDR" ] || die "Site '$target' is not connected: nothing to measure"
+  echo "Path: site $target, through the tunnel interface $MTU_DEV to $MTU_ADDR."
+  mtu_measure "$MTU_ADDR" "${via:-$MTU_DEV}" "$MTU_SITE" ""
+}
+
+# mtu_measure ADDR DEV [SITE] [PREFIX]: measure one way. SITE (or a tunnel found from DEV) switches on the road check and the router-limit note.
+mtu_measure() {
+  local outer_ip="" addr=$1 dev=$2 site=${3:-} pfx=${4:-} cur lo raised=0 want="" outer="" olim="" note="" max sug lowered=""
+  if [ -z "$site" ] && [[ "$dev" == ppp* ]]; then          # an address whose way is a tunnel of ours
+    MTU_NAME=""; MTU_BYDEV=$dev; MTU_FOUND=""; MTU_OUTER=""; MTU_WANT=""; MTU_SITE=""
+    for_each_site mtu_find_cb
+    if [ -n "$MTU_FOUND" ]; then site=$MTU_SITE; echo "$dev is the tunnel of $site."; fi
+  elif [ -n "$site" ]; then :
+  elif [[ "$dev" != ppp* ]]; then echo "$dev is a normal network card: the traffic goes out to the internet directly, no tunnel wrapping."; fi
+  [ -z "$site" ] || { want=$MTU_WANT; outer_ip=$MTU_OUTER; }
   cur=$(ip -o link show dev "$dev" 2>/dev/null | sed -n 's/.* mtu \([0-9]*\).*/\1/p')
-  probe() { ping -c 2 -i 0.3 -W 2 -n -q -M do -s "$1" "${pinger_dev[@]}" "$addr" >/dev/null 2>&1; }
+  probe() { ping -c 2 -i 0.3 -W 2 -n -q -M do -s "$1" -I "$dev" "$addr" >/dev/null 2>&1; }
   if ! probe 56; then
-    echo "No answer from $addr even with a tiny packet (the far router may not answer ping, or the path is down)."
-    echo "RESULT addr=$addr dev=$dev current=${cur:-?} max=0 suggested=0"; return 1
+    echo "No answer from $addr through $dev even with a tiny packet (the far router may not answer ping, or the path is down)."
+    echo "RESULT addr=$addr dev=$dev current=${cur:-?} max=0 suggested=0 inner=0 outer=0 lowered=0${site:+ site=$site}"; return 1
   fi
   if [[ "$dev" == ppp* ]] && [ -n "$cur" ] && [ "$cur" -lt 1500 ]; then
     ip link set dev "$dev" mtu 1500 2>/dev/null && raised=1
     trap 'if [ "'"$raised"'" = 1 ]; then ip link set dev "'"$dev"'" mtu "'"$cur"'" 2>/dev/null; fi' EXIT
   fi
-  lo=56; hi=1472                                   # payload sizes; packet = payload + 28 bytes (IP + ICMP header)
-  if probe "$hi"; then lo=$hi
-  else
-    while [ "$lo" -lt "$hi" ]; do
-      mid=$(( (lo + hi + 1) / 2 ))
-      if probe "$mid"; then lo=$mid; else hi=$((mid - 1)); fi
-    done
-  fi
+  find_max() { local fn=$1 l=56 h=1472 m; if $fn "$h"; then echo "$h"; return; fi
+               while [ "$l" -lt "$h" ]; do m=$(( (l + h + 1) / 2 )); if $fn "$m"; then l=$m; else h=$((m - 1)); fi; done; echo "$l"; }
+  lo=$(find_max probe)
   if [ "$raised" = 1 ]; then ip link set dev "$dev" mtu "$cur" 2>/dev/null; raised=0; trap - EXIT; fi
-  local max=$((lo + 28)) sug
-  sug=$max; if [ "$sug" -gt 1500 ]; then sug=1500; fi
-  if [ "$max" -ge 1500 ]; then echo "Packets up to 1500 bytes pass: no size limit found on this path."
-  else echo "The biggest packet that passes is $max bytes (the link MTU now is ${cur:-?}); a good MTU is $sug."; fi
-  echo "RESULT addr=$addr dev=$dev current=${cur:-?} max=$max suggested=$sug"
+  max=$((lo + 28)); [ "$max" -le 1500 ] || max=1500
+  sug=$max
+  # A big packet can pass INSIDE the tunnel and still be a bad choice: the wrapped packet (IPsec + L2TP + PPP, about 101 bytes)
+  # must fit the real road too, otherwise the outside packets are cut into pieces (slow, and some networks drop them).
+  if [ -n "$site" ]; then
+    if [ -n "${outer_ip:-}" ]; then
+      oprobe() { ping -c 2 -i 0.3 -W 2 -n -q -M do -s "$1" "$outer_ip" >/dev/null 2>&1; }
+      if oprobe 56; then outer=$(( $(find_max oprobe) + 28 )); [ "$outer" -le 1500 ] || outer=1500; fi
+    fi
+    if [ -n "$outer" ]; then olim=$((outer - 101))
+    else olim=$((1500 - 101)); note=" The road to the far router could not be measured (it did not answer ping, or its address is not known), so 1500 was assumed."; fi
+    if [ -n "$want" ] && [ -n "$cur" ] && [ "$cur" -lt "$want" ]; then lowered=$cur; fi
+  fi
+  if [ -n "$olim" ] && [ "$olim" -lt "$sug" ]; then
+    echo "Inside the tunnel packets up to $max bytes pass, but the outside road carries only ${outer:-1500} bytes and the tunnel wrapping needs about 101 bytes."
+    echo "A bigger packet would be cut into pieces on the way (slow or lost). A good MTU is $olim.$note"
+    sug=$olim
+  elif [ "$max" -ge 1500 ]; then echo "Packets up to 1500 bytes pass through $dev: no size limit found on this way.$note"
+  else echo "Through $dev the biggest packet that passes is $max bytes (the link MTU now is ${cur:-?}); a good MTU is $sug.$note"; fi
+  if [ -n "$lowered" ]; then
+    echo "The far router asked for at most $lowered bytes when the tunnel came up (its MRU; you set $want here), so the tunnel really carries only $lowered."
+    [ "$sug" -le "$lowered" ] || sug=$lowered
+  fi
+  echo "RESULT addr=$addr dev=$dev current=${cur:-?} max=$max suggested=$sug inner=$max outer=${outer:-0} lowered=${lowered:-0}${site:+ site=$site}${pfx:+ prefix=$pfx}"
+}
+
+# mtu-verify [NAME]: does the MTU that is SET for each connected tunnel really get through right now?
+# One DF ping of exactly that size through the tunnel (the link is not touched). Result per tunnel in $STATE_DIR/mtu-status:
+#   NAME state want cur time      state = ok | bad (the set size does not pass) | lowered (the router asked for less) | unknown (no answer even to a tiny ping)
+# The watcher runs it every 5 minutes; the panel colours the MTU chip from it.
+mtu_verify_cb() {
+  [ "$S_DISABLED" != yes ] || return 0
+  [ -z "${MTU_ONLY_NAME:-}" ] || [ "$S_NAME" = "$MTU_ONLY_NAME" ] || return 0
+  local dev addr want=${S_MTU:-1280} name=$S_NAME
+  if [ "$S_MODE" = server ]; then dev=$(ifc_by_peer "$S_IP"); addr=$S_IP
+  else
+    dev="ppp-$S_NAME"
+    addr=$(ip -o -4 addr show dev "$dev" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="peer"){sub("/.*","",$(i+1)); print $(i+1); exit}}')
+  fi
+  [ -n "$dev" ] && [ -n "$addr" ] && iface_up "$dev" || return 0
+  (
+    local cur st=ok t
+    cur=$(ip -o link show dev "$dev" 2>/dev/null | sed -n 's/.* mtu \([0-9]*\).*/\1/p')
+    if ! ping -c 2 -i 0.3 -W 2 -n -q -M do -s 56 -I "$dev" "$addr" >/dev/null 2>&1; then st=unknown
+    else
+      # two different problems, kept apart: "lowered" = the router asked for less than we set; "bad" = even the size the link really
+      # uses (the smaller of the two) does not get through. Both can be true at once.
+      t=$want; [ -z "$cur" ] || [ "$cur" -ge "$want" ] || t=$cur
+      if ! ping -c 3 -i 0.3 -W 2 -n -q -M do -s $((t - 28)) -I "$dev" "$addr" >/dev/null 2>&1; then
+        if [ "$t" -lt "$want" ]; then st=both; else st=bad; fi
+      elif [ "$t" -lt "$want" ]; then st=lowered
+      fi
+    fi
+    echo "$name $st $want ${cur:-0} $(date +%s)" > "$MTU_VTMP/$name"
+  ) &
+}
+cmd_mtu_verify() {
+  need_root
+  command -v ping >/dev/null 2>&1 || return 0
+  MTU_ONLY_NAME=${1:-}
+  MTU_VTMP=$(mktemp -d)
+  for_each_site mtu_verify_cb
+  wait
+  mkdir -p "$STATE_DIR"
+  local f out="$STATE_DIR/mtu-status" tmp
+  tmp=$(mktemp)
+  # keep the lines of tunnels that were not looked at in this run (single-name run), drop the ones that no longer exist
+  if [ -n "$MTU_ONLY_NAME" ] && [ -f "$out" ]; then grep -v "^$MTU_ONLY_NAME " "$out" > "$tmp" || true; fi
+  for f in "$MTU_VTMP"/*; do [ -f "$f" ] && cat "$f" >> "$tmp"; done
+  mv "$tmp" "$out"; chmod 644 "$out"
+  rm -rf "$MTU_VTMP"; MTU_ONLY_NAME=""
+  [ -z "${QUIET:-}" ] && cat "$out" || true
 }
 
 # two active dial-in clients with the same network AND the same distance (metric): the traffic is split between them
@@ -1357,6 +1475,89 @@ check_dup_routes() {
     [ -n "$line" ] && chk WARN "dial-in clients have the SAME network and distance: $line - traffic is split between them (typo?)"
   done < <(awk '{k=$1" metric "$2; c[k]++; n[k]=n[k] (n[k]==""?"":" and ") $3} END{for(k in c) if(c[k]>1) print k" ("n[k]")"}' "$DUP_TMP" | sort)
   rm -f "$DUP_TMP"
+}
+
+# ---- connection quality: a few pings through every tunnel (and through the road outside it) every minute ----
+# quality-sample: one line per tunnel is appended to $STATE_DIR/quality/NAME.log (the watcher runs this every minute):
+#   TIME STATE LOSS AVG MAX JITTER OUT_LOSS OUT_AVG OUT_MAX RX_BYTES TX_BYTES      ("-" = not measured)
+#   STATE up|down; LOSS in percent, times in ms; the first group is INSIDE the tunnel, OUT_ is the road to the far router outside it.
+# The panel (Quality pages) turns the lines into averages, worst values, speed and a grade; 7 days are kept.
+# pingstat ARGS...: "LOSS AVG MAX JITTER" of 5 quick pings, "- - - -" when ping cannot run at all
+pingstat() {
+  local out loss rtt
+  out=$(ping -c 5 -i 0.2 -W 1 -n -q "$@" 2>&1) || true
+  loss=$(printf '%s\n' "$out" | sed -n 's/.* \([0-9.]*\)% packet loss.*/\1/p' | head -n1)
+  [ -n "$loss" ] || { echo "- - - -"; return; }
+  rtt=$(printf '%s\n' "$out" | sed -n 's|^r[a-z-]* min/avg/max/[a-z]* = [0-9.]*/\([0-9.]*\)/\([0-9.]*\)/\([0-9.]*\).*|\1 \2 \3|p' | head -n1)
+  if [ -n "$rtt" ]; then echo "$loss $rtt"; else echo "$loss - - -"; fi
+}
+quality_cb() {
+  [ "$S_DISABLED" != yes ] || return 0
+  [ -z "${Q_ONLY:-}" ] || [ "$S_NAME" = "$Q_ONLY" ] || return 0
+  local dev addr outer="" name=$S_NAME log
+  if [ "$S_MODE" = server ]; then dev=$(ifc_by_peer "$S_IP"); addr=$S_IP; outer=${Q_DIALIN_OUTER:-}
+  else
+    dev="ppp-$S_NAME"
+    addr=$(ip -o -4 addr show dev "$dev" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="peer"){sub("/.*","",$(i+1)); print $(i+1); exit}}' || true)
+    outer=$S_HOST; is_ipv4 "$outer" || outer=$(resolve_v4 "$outer")
+  fi
+  log="$STATE_DIR/quality/$name.log"
+  if [ -z "$dev" ] || [ -z "$addr" ] || ! iface_up "$dev"; then
+    echo "$(date +%s) down - - - - - - - - -" >> "$log"; return 0
+  fi
+  (
+    local i o rx tx
+    i=$(pingstat -I "$dev" "$addr")
+    if [ -n "$outer" ]; then o=$(pingstat "$outer"); else o="- - - -"; fi
+    rx=$(cat "${SYS_NET:-/sys/class/net}/$dev/statistics/rx_bytes" 2>/dev/null || echo -); tx=$(cat "${SYS_NET:-/sys/class/net}/$dev/statistics/tx_bytes" 2>/dev/null || echo -)
+    # outside numbers: loss, avg, max only (jitter of the road is not shown)
+    set -- $o
+    echo "$(date +%s) up $i $1 $2 $3 $rx $tx" >> "$log"
+  ) &
+}
+# alert_quality NAME: a Telegram message when the last 5 minutes were poor, and one when it is good again
+quality_alert() {
+  local name=$1 log="$STATE_DIR/quality/$1.log" flag="$STATE_DIR/quality/$1.alert" r loss rtt jit oloss poor=0 good=0 verdict
+  [ "$(conf_get quality_alert)" != no ] || return 0
+  r=$(grep ' up ' "$log" | tail -n 5 | awk '{ n++; if ($3 != "-") { l += $3; ln++ } if ($4 != "-") { a += $4; an++ } if ($6 != "-") { j += $6; jn++ } if ($7 != "-") { o += $7; on++ } }
+       END { if (n < 5) { print "none"; exit } printf "%.1f %.0f %.0f %.1f\n", ln ? l/ln : 0, an ? a/an : 0, jn ? j/jn : 0, on ? o/on : -1 }')
+  [ "$r" != none ] || return 0
+  read -r loss rtt jit oloss <<< "$r"
+  if awk -v l="$loss" -v a="$rtt" -v j="$jit" 'BEGIN { exit !(l >= 5 || a >= 400 || j >= 120) }'; then poor=1; fi
+  if awk -v l="$loss" -v a="$rtt" -v j="$jit" 'BEGIN { exit !(l < 1 && a < 150 && j < 40) }'; then good=1; fi
+  if [ "$poor" = 1 ] && [ ! -f "$flag" ]; then
+    if awk -v o="$oloss" 'BEGIN { exit !(o >= 2) }'; then verdict="The road outside the tunnel is bad too (loss ${oloss}%): the internet path or a filter, not the tunnel."
+    elif awk -v o="$oloss" 'BEGIN { exit !(o >= 0) }'; then verdict="The road outside the tunnel is fine: the problem is inside the tunnel (IPsec, L2TP, MTU or the router load)."
+    else verdict="The road outside the tunnel could not be measured."; fi
+    if notify_send "$name: connection quality is POOR for 5 minutes (lost packets ${loss}%, average delay ${rtt} ms, delay swing ${jit} ms). $verdict"; then :; fi
+    date +%s > "$flag"
+    echo "$(date '+%F %T') $name quality poor: loss ${loss}% avg ${rtt} ms jitter ${jit} ms (alert attempted)" >> "$STATE_DIR/watch.log"
+  elif [ "$good" = 1 ] && [ -f "$flag" ]; then
+    notify_send "$name: connection quality is good again (lost packets ${loss}%, average delay ${rtt} ms)." || true
+    rm -f "$flag"
+    echo "$(date '+%F %T') $name quality good again" >> "$STATE_DIR/watch.log"
+  fi
+}
+quality_alert_cb() { [ "$S_DISABLED" != yes ] || return 0; quality_alert "$S_NAME"; }
+cmd_quality_sample() {
+  need_root
+  [ -f "$SITES" ] || return 0
+  command -v ping >/dev/null 2>&1 || return 0
+  mkdir -p "$STATE_DIR/quality"
+  Q_ONLY=${1:-}
+  Q_DIALIN_OUTER=$(ipsec status 2>/dev/null | sed -n 's/^l2tp-gw-dialin\[[0-9]*\]: ESTABLISHED.*\.\.\.\([0-9.]*\)\[.*/\1/p' | sort -u)
+  [ "$(printf '%s\n' "$Q_DIALIN_OUTER" | grep -c .)" = 1 ] || Q_DIALIN_OUTER=""
+  for_each_site quality_cb
+  wait
+  Q_ONLY=""
+  local f n
+  for f in "$STATE_DIR"/quality/*.log; do        # keep 7 days (one line a minute)
+    [ -f "$f" ] || continue
+    if [ "$(wc -l < "$f")" -gt 10200 ]; then tail -n 10080 "$f" > "$f.tmp" && mv "$f.tmp" "$f"; fi
+    n=$(basename "$f" .log)
+    grep -q "^\[$n\]" "$SITES" 2>/dev/null || rm -f "$f" "$STATE_DIR/quality/$n.alert"      # a deleted site takes its history with it
+  done
+  for_each_site quality_alert_cb
 }
 
 cmd_check() {
@@ -1723,6 +1924,10 @@ cmd_watch() {
   WATCH_IPSEC_OK=1
   WATCH_IPSEC=$(ipsec status 2>/dev/null) || WATCH_IPSEC_OK=0
   for_each_site watch_site
+  QUIET=1 timeout 45 "$0" quality-sample >/dev/null 2>&1 || true
+  if [ ! -f "$STATE_DIR/mtu-status" ] || [ $(( $(date +%s) - $(stat -c %Y "$STATE_DIR/mtu-status" 2>/dev/null || echo 0) )) -ge 300 ]; then
+    QUIET=1 timeout 60 "$0" mtu-verify >/dev/null 2>&1 || true
+  fi
   if [ -n "$WATCH_NEED_APPLY" ]; then
     local now last
     now=$(date +%s); last=$(cat "$STATE_DIR/last-ddns-apply" 2>/dev/null || echo 0)
@@ -1799,6 +2004,8 @@ main() {
     routes-sync) cmd_routes_sync "${2:-}" "${3:-up}" ;;
     mtu-test)    cmd_mtu_test "${2:-}" "${3:-}" ;;
     mtu-apply)   cmd_mtu_apply "${2:-}" ;;
+    mtu-verify)  cmd_mtu_verify "${2:-}" ;;
+    quality-sample) cmd_quality_sample "${2:-}" ;;
     site-sync) cmd_site_sync ;;
     dialin-sync) cmd_dialin_sync ;;
     access-sync) need_root; apply_client_access "${2:-}" ;;
