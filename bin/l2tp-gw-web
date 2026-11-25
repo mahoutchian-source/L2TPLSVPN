@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 CONF_DIR = os.environ.get("CONF_DIR", "/etc/l2tp-gw")
 SITES = os.path.join(CONF_DIR, "sites.conf")
 WEB_CONF = os.path.join(CONF_DIR, "web.conf")
@@ -23,7 +23,7 @@ GW = os.environ.get("L2TP_GW", "/usr/local/bin/l2tp-gw")
 UNIT = os.environ.get("UNIT_FILE", "/etc/systemd/system/l2tp-gw-web.service")
 KEYS = ["host", "psk", "user", "pass", "mppe", "nat", "routes", "reconnect_every", "reconnect_at", "reconnect_window",
         "quota_gb", "quota_period", "quota_dir", "quota_warn", "ipsec_mode", "mode", "ip", "disabled",
-        "access_internet", "access_clients", "access_sites", "lcp_echo"]    # (access_*: "no" = blocked; empty = allowed, not written)
+        "access_internet", "access_clients", "access_sites", "lcp_echo", "mtu"]    # (access_*: "no" = blocked; empty = allowed, not written)
 OPTIONAL = set(KEYS[6:])      # written only when not empty
 SERVER_SKIP = ("host", "psk", "mppe")    # a dial-in (mode = server) site has no address to dial and uses the shared IPsec secret
 DIALIN_CONF = os.path.join(CONF_DIR, "dialin.conf")
@@ -1717,6 +1717,7 @@ a{color:var(--accent)}
 .nav a[href="/events"]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7v5l3 2'/%3E%3C/svg%3E")}
 .nav a[href="/routes"]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 4v8a4 4 0 0 0 4 4h8M15 12l4 4-4 4'/%3E%3C/svg%3E")}
 .nav a[href="/check"]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12h4l3-8 4 16 3-8h4'/%3E%3C/svg%3E")}
+.nav a[href="/mtu"]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4'/%3E%3C/svg%3E")}
 .nav a[href="/backup"]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v12M7 10l5 5 5-5M4 20h16'/%3E%3C/svg%3E")}
 .nav a[href="/settings"]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3Cpath d='M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2'/%3E%3C/svg%3E")}
 .sidefoot{display:flex;align-items:center;gap:6px;padding:10px 4px 0;border-top:1px solid var(--line);margin-top:10px}
@@ -1894,7 +1895,7 @@ def csrf_of(sid):
     return SESSIONS[sid]["csrf"]
 
 
-NAV = [("/", "Dashboard"), ("/sites", "Sites"), ("/dialin", "Dial-in"), ("/traffic", "Traffic"), ("/events", "Events"), ("/routes", "Routes"), ("/check", "Health check"), ("/backup", "Backup"), ("/settings", "Settings")]
+NAV = [("/", "Dashboard"), ("/sites", "Sites"), ("/dialin", "Dial-in"), ("/traffic", "Traffic"), ("/events", "Events"), ("/routes", "Routes"), ("/check", "Health check"), ("/mtu", "Measure MTU"), ("/backup", "Backup"), ("/settings", "Settings")]
 
 
 THEME_BOOT = ("try{var t=localStorage.getItem('theme');if(t)document.documentElement.setAttribute('data-theme',t)}catch(e){}")
@@ -1990,6 +1991,8 @@ def site_rows(ppp, ipsec):
             tags += "<span class='chip tag'>MPPE</span>"
         if ipmode != "heal":
             tags += "<span class='chip tag'>IPsec: %s</span>" % e(ipmode)
+        if s.get("mtu"):
+            tags += "<span class='chip tag'>MTU %s</span>" % e(s["mtu"])
         for k, label in (("internet", "no internet"), ("sites", "no other sites"), ("clients", "no dial-in clients")):
             if s.get("access_" + k) == "no":
                 tags += "<span class='chip tag'>%s</span>" % label
@@ -2072,7 +2075,11 @@ def edit_page(sid, name=None, msg=None, vals=None):
                 + acc("acc_internet", "The internet through this server", "Traffic that arrives from this site and leaves the server toward the internet.")
                 + acc("acc_sites", "The other outgoing sites", "No traffic between this site and the other tunnels this server dials.")
                 + acc("acc_clients", "The dial-in clients", "No traffic between this site and the routers that dial in.")
-                + "</fieldset>")
+                + "</fieldset>"
+                + "<fieldset><legend>Packet size (MTU)</legend>"
+                "<label for=mtu>MTU of this tunnel<span class=hint>576 to 1500. Empty = 1280. A new value is used the next time the tunnel connects. "
+                "Use the Measure MTU page to find the right value.</span></label>"
+                "<input type=text id=mtu name=mtu value='" + e(s.get("mtu", "")) + "' class=mono placeholder='1280'></fieldset>")
     keep = "Leave empty to keep the current one." if editing else ""
     ph = " placeholder='unchanged'" if editing else ""
     body = ("<div class=bar><h1>%s</h1></div>"
@@ -2328,7 +2335,11 @@ def dialin_edit_page(sid, name=None, msg=None, vals=None):
                 + acc("acc_internet", "The internet through this server", "Traffic that leaves the server toward the internet.")
                 + acc("acc_clients", "Other dial-in clients", "Blocked both ways: they cannot reach this client either.")
                 + acc("acc_sites", "The outgoing sites (the tunnels this server dials)", "Blocked both ways.")
-                + "</fieldset>")
+                + "</fieldset>"
+                + "<fieldset><legend>Packet size (MTU)</legend>"
+                "<label for=mtu>MTU of this client<span class=hint>576 to 1500. Empty = 1280. Applied to the live connection at once. "
+                "Use the Measure MTU page to find the right value.</span></label>"
+                "<input type=text id=mtu name=mtu value='" + e(s.get("mtu", "")) + "' class=mono placeholder='1280'></fieldset>")
     body = ("<div class=bar><h1>%s</h1></div>"
             "<form class=form method=post action=/dialin/save autocomplete=off>"
             "<input type=hidden name=csrf value='%s'><input type=hidden name=orig value='%s'>"
@@ -2961,6 +2972,61 @@ def traffic_page(sid, msg=None):
     return page("Traffic", body, sid, msg, "/traffic")
 
 
+def mtu_targets():
+    """connected sites and dial-in clients that can be measured: (name, kind, user, mtu)"""
+    out = []
+    for x in load_sites():
+        if x.get("disabled") == "yes":
+            continue
+        out.append((x["name"], "client" if is_server(x) else "site", x.get("user", ""), x.get("mtu", "")))
+    return out
+
+
+def mtu_page(sid, msg=None, result=None):
+    e = html.escape
+    tg = mtu_targets()
+    opts = "".join("<option value='%s'>%s (%s)</option>" % (e(n), e(n), "dial-in client" if k == "client" else "outgoing site")
+                   for n, k, _, _ in tg)
+    res = ""
+    if result:
+        tgt, rc, out, kind, user = result
+        line = ""
+        for l in out.splitlines():
+            if l.startswith("RESULT "):
+                line = l
+        info = dict(re.findall(r"(\w+)=(\S+)", line))
+        text = "\n".join(l for l in out.splitlines() if not l.startswith("RESULT "))
+        res = "<div class=chk><div><span>%s</span></div></div>" % e(text).replace("\n", "<br>")
+        sug = int(info.get("suggested", "0") or 0)
+        if rc == 0 and sug >= 576:
+            res += "<p>Suggested MTU: <b class=mono>%d</b> (largest packet that passed: %s, now: %s)</p>" % (sug, e(info.get("max", "?")), e(info.get("current", "?")))
+            if kind in ("site", "client"):
+                res += ("<form method=post action=/mtu/set><input type=hidden name=csrf value='%s'><input type=hidden name=name value='%s'>"
+                        "<input type=hidden name=mtu value='%d'><button class='btn pri' data-busy='Applying, please wait...'>Use %d for %s</button></form>"
+                        % (e(csrf_of(sid)), e(tgt), sug, sug, e(tgt)))
+                if kind == "client":
+                    cmd = "/interface l2tp-client set [find user=\"%s\"] max-mtu=%d max-mru=%d" % (user, sug, sug)
+                else:
+                    cmd = "/interface l2tp-server server set max-mtu=%d max-mru=%d" % (sug, sug)
+                res += ("<p class=hint>The same value on the MikroTik (type it in a terminal; both ends should agree):</p>"
+                        "<pre class=mono style='user-select:all'>%s</pre>" % e(cmd))
+            else:
+                res += "<p class=hint>This address is not one of your connections, so nothing is saved. Use the number where you need it.</p>"
+    body = ("<div class=bar><div><h1>Measure MTU</h1><div class=sum>Finds the largest packet that passes without being cut. "
+            "It only suggests a value; nothing changes until you press the button.</div></div></div>"
+            "<form class=form method=post action=/mtu/run autocomplete=off><input type=hidden name=csrf value='%s'>"
+            "<fieldset><legend>What to measure</legend>"
+            "<label for=t1>A connection of yours<span class=hint>The tunnel must be connected.</span></label>"
+            "<select id=t1 name=target><option value=''>-</option>%s</select>"
+            "<label for=t2>Or any IP address<span class=hint>Example 8.8.8.8 or an address behind a router. Used instead of the choice above when filled.</span></label>"
+            "<input type=text id=t2 name=address class=mono placeholder='8.8.8.8'>"
+            "<label for=t3>Through interface (optional)<span class=hint>Only for an address; empty = the way the server would normally send it.</span></label>"
+            "<input type=text id=t3 name=iface class=mono placeholder='ppp-nttlinka'></fieldset>"
+            "<p style='margin-top:18px'><button class='btn pri' data-busy='Measuring, this takes up to a minute...'>Measure</button></p></form>%s"
+            "<p class=note>The same on the server: l2tp-gw mtu-test NAME-or-ADDRESS</p>" % (e(csrf_of(sid)), opts, res))
+    return page("Measure MTU", body, sid, msg, "/mtu")
+
+
 def check_page(sid, msg=None):
     e = html.escape
     rc, out = run([GW, "check"], 60)
@@ -3544,6 +3610,8 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.send(200, edit_page(sid, q.get("name", [None])[0]))
         if u.path == "/check":
             return self.send(200, check_page(sid, FLASH.pop(sid, None)))
+        if u.path == "/mtu":
+            return self.send(200, mtu_page(sid, FLASH.pop(sid, None)))
         if u.path == "/logs":
             return self.send(200, logs_page(sid, q.get("name", [""])[0], 200))
         if u.path == "/backup":
@@ -3681,6 +3749,10 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.dialin_settings(sid, f)
         if u.path == "/dialin/save":
             return self.dialin_save(sid, f)
+        if u.path == "/mtu/run":
+            return self.mtu_run(sid, f)
+        if u.path == "/mtu/set":
+            return self.mtu_set(sid, f)
         if u.path in ("/dialin/delete", "/dialin/toggle", "/dialin/disconnect"):
             return self.dialin_change(sid, f, u.path.rsplit("/", 1)[1])
         if u.path == "/reconnect":
@@ -3861,7 +3933,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def dialin_save(self, sid, f):
         new = {"name": f.get("name", "").strip(), "mode": "server"}
-        for k in ("user", "pass", "ip", "routes", "quota_gb", "quota_period", "quota_dir", "quota_warn"):
+        for k in ("user", "pass", "ip", "routes", "mtu", "quota_gb", "quota_period", "quota_dir", "quota_warn"):
             new[k] = f.get(k, "").strip()
         new["nat"] = "yes" if f.get("nat") else "no"
         for k in ("internet", "clients", "sites"):       # ticked = allowed (empty, not written), un-ticked = "no"
@@ -3891,6 +3963,40 @@ class H(http.server.BaseHTTPRequestHandler):
         FLASH[sid] = (True, self.dialin_note(out))
         return self.redirect("/dialin" if old is not None else "/dialin/howto?name=" + new["name"])
 
+    def mtu_run(self, sid, f):
+        addr, name, iface = f.get("address", "").strip(), f.get("target", "").strip(), f.get("iface", "").strip()
+        tg = {n: (k, u) for n, k, u, _ in mtu_targets()}
+        if addr:
+            if not re.match(r"^\d{1,3}(\.\d{1,3}){3}$", addr) or (iface and not re.match(r"^[A-Za-z0-9_.-]{1,15}$", iface)):
+                return self.send(200, mtu_page(sid, msg=(False, "Write an IPv4 address like 8.8.8.8 and, if you want, an interface name.")))
+            cmd, shown, kind, user = [GW, "mtu-test", addr] + ([iface] if iface else []), addr, "address", ""
+        elif name in tg:
+            cmd, shown, (kind, user) = [GW, "mtu-test", name], name, tg[name]
+        else:
+            return self.send(200, mtu_page(sid, msg=(False, "Choose a connection or write an address.")))
+        with LOCK:
+            rc, out = run(cmd, 150)
+        return self.send(200, mtu_page(sid, result=(shown, rc, out, kind, user)))
+
+    def mtu_set(self, sid, f):
+        name, val = f.get("name", ""), f.get("mtu", "").strip()
+        if not re.match(r"^\d{3,4}$", val) or not 576 <= int(val) <= 1500:
+            FLASH[sid] = (False, "MTU must be a number from 576 to 1500.")
+            return self.redirect("/mtu")
+        with LOCK:
+            sites = load_sites()
+            cur = next((x for x in sites if x["name"] == name), None)
+            if cur is None:
+                FLASH[sid] = (False, "Unknown connection.")
+                return self.redirect("/mtu")
+            cur["mtu"] = val
+            ok, out = save_all(sites, "dialin-sync" if is_server(cur) else "apply")
+        if ok:
+            add_event("info", "MTU of %s set to %s" % (name, val))
+        FLASH[sid] = (ok, ("MTU of %s set to %s. %s" % (name, val, self.dialin_note(out).replace("Saved. ", "") if is_server(cur) else
+                              "It is used the next time this tunnel connects (or run Reconnect on the Sites page).")) if ok else out)
+        return self.redirect("/mtu")
+
     def dialin_change(self, sid, f, what):
         name = f.get("name", "")
         with LOCK:
@@ -3915,7 +4021,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def save(self, sid, f):
         new = {"name": f.get("name", "").strip()}
-        for k in ("host", "user", "routes"):
+        for k in ("host", "user", "routes", "mtu"):
             new[k] = f.get(k, "").strip()
         new["mppe"] = "yes" if f.get("mppe") else "no"
         new["nat"] = "yes" if f.get("nat") else "no"

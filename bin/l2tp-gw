@@ -9,6 +9,7 @@
 #   l2tp-gw apply          regenerate all config from the sites file and restart services
 #   l2tp-gw status         show IPsec, ppp interfaces, routes and NAT rules
 #   l2tp-gw check          health check of everything (services, IPsec, PPP, ESP, routes, NAT)
+#   l2tp-gw mtu-test NAME|ADDRESS [IFACE]   measure the biggest packet that passes (a connected site, or any address)
 #   l2tp-gw reconnect NAME reconnect ONE site (other tunnels are not touched)
 #   l2tp-gw logs [NAME] [N] last N log lines (only lines about NAME if given)
 #   l2tp-gw backup [FILE]  copy the sites file (default: /root/l2tp-gw-sites-DATE.conf)
@@ -34,7 +35,7 @@ set -euo pipefail
 : "${XL2TPD_CONF:=/etc/xl2tpd/xl2tpd.conf}"
 : "${SECRETS:=/etc/ipsec.secrets}"
 : "${NO_RESTART:=0}"
-VERSION="1.0.2"
+VERSION="1.0.3"
 SITES="$CONF_DIR/sites.conf"
 DIALIN="${DIALIN_FILE:-$CONF_DIR/dialin.conf}"      # settings of the dial-in server (see "dial-in" below)
 TAG="# managed by l2tp-gw"
@@ -53,7 +54,7 @@ ike_service() {
 
 # ---------- sites file parsing ----------
 reset_site() { S_NAME=""; S_HOST=""; S_PSK=""; S_USER=""; S_PASS=""; S_MPPE="no"; S_ROUTES=""; S_NAT="no"
-  S_REC_EVERY=""; S_REC_AT=""; S_REC_WIN=""; S_QUOTA=""; S_QPERIOD="day"; S_QDIR="total"; S_QWARN="80"; S_IPSEC_MODE="heal"; S_LCP="on"
+  S_REC_EVERY=""; S_REC_AT=""; S_REC_WIN=""; S_QUOTA=""; S_QPERIOD="day"; S_QDIR="total"; S_QWARN="80"; S_IPSEC_MODE="heal"; S_LCP="on"; S_MTU=""
   S_MODE="client"; S_IP=""; S_DISABLED="no"; S_ACC_INET="yes"; S_ACC_CLIENTS="yes"; S_ACC_SITES="yes"; }
 
 trim() { sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
@@ -90,6 +91,7 @@ for_each_site() {   # calls function "$1" once per [site] block, vars in S_*
           quota_warn)       S_QWARN=$val ;;
           ipsec_mode)       S_IPSEC_MODE=$val ;;
           lcp_echo)         S_LCP=$val ;;
+          mtu)              S_MTU=$val ;;
           mode)             S_MODE=$val ;;
           ip)               S_IP=$val ;;
           disabled)         S_DISABLED=$val ;;
@@ -146,6 +148,9 @@ parse_routes() {
 #       allow           the tunnel may stay without IPsec: no alert, no repair (for peers that cannot do IPsec)
 #       require         alert after 30 s and keep repairing every 2 min, never leave it plain; plain UDP 1701 from this
 #                       router is also dropped by the firewall (chain L2TPGW-REQ)
+#   mtu = 1280          packet size inside this tunnel, 576-1500 (empty = 1280). Outgoing sites: given to pppd (needs a reconnect);
+#                       dial-in clients: set on the live link when the client connects and by dialin-sync.
+#                       Measure the right value with:  l2tp-gw mtu-test NAME|ADDRESS
 #   lcp_echo = on|off   (outgoing sites, default on) the server sends a PPP "are you alive" every 30 s and ends the
 #                       tunnel after 6 missed answers (3 min), so a tunnel that died silently is redialled
 validate_automation() {
@@ -167,6 +172,9 @@ validate_automation() {
   [[ "$S_QWARN" =~ ^[0-9]{1,2}$ ]] && [ "$((10#$S_QWARN))" -ge 1 ] || die "$w quota_warn must be a percent from 1 to 99"
   case "$S_IPSEC_MODE" in ''|heal|allow|require) ;; *) die "$w ipsec_mode must be heal, allow or require" ;; esac
   case "$S_LCP" in ''|on|off) ;; *) die "$w lcp_echo must be on or off" ;; esac
+  if [ -n "$S_MTU" ]; then
+    [[ "$S_MTU" =~ ^[0-9]{3,4}$ ]] && [ "$((10#$S_MTU))" -ge 576 ] && [ "$((10#$S_MTU))" -le 1500 ] || die "$w mtu must be a number from 576 to 1500 (empty = 1280)"
+  fi
 }
 
 # ---------- dial-in (this server ACCEPTS L2TP/IPsec from routers that cannot be called: no public IP, behind NAT) ----------
@@ -349,8 +357,8 @@ gen_site() {
     echo "nodefaultroute"
     echo "ipcp-accept-local"
     echo "ipcp-accept-remote"
-    echo "mtu 1280"
-    echo "mru 1280"
+    echo "mtu ${S_MTU:-1280}"
+    echo "mru ${S_MTU:-1280}"
     echo "connect-delay 5000"
     if [ "${S_LCP:-on}" != off ]; then echo "lcp-echo-interval 30"; echo "lcp-echo-failure 6"; fi
   } > "$PPP_DIR/options.l2tpd.$S_NAME"
@@ -418,6 +426,7 @@ write_route_hooks() {
       echo '# pppd gives: interface, tty, speed, local ip, remote ip, ipparam (= site name)'
       echo 'IFACE="${PPP_IFACE:-${IFNAME:-$1}}"'
       echo "CONF_DIR=\"$CONF_DIR\" \"$gw\" routes-sync \"\$IFACE\" $d || true"
+      if [ "$d" = up ]; then echo "CONF_DIR=\"$CONF_DIR\" \"$gw\" mtu-apply \"\$IFACE\" >/dev/null 2>&1 || true"; fi
       if [ "$d" = down ]; then
         echo '# a late ip-down of an old session must not remove routes of a tunnel that is already back:'
         echo "( sleep 3; CONF_DIR=\"$CONF_DIR\" \"$gw\" routes-sync \"\$IFACE\" up ) >/dev/null 2>&1 &"
@@ -760,6 +769,7 @@ cmd_dialin_sync() {
   apply_require_fw
   apply_client_access
   kick_unwanted || true
+  cmd_mtu_apply "" || true
   cmd_routes_sync "" up
   if [ -f "$STATE_DIR/dialin.applied" ] && [ "$(cat "$STATE_DIR/dialin.applied")" != "$(dialin_hash)" ]; then
     echo "RESTART-NEEDED: the shared dial-in settings changed; run: l2tp-gw apply"
@@ -1256,6 +1266,78 @@ check_site() {
   fi
 }
 
+# ---- MTU: per-client setting for dial-in links, and a measurement for any tunnel or address ----
+# mtu-apply [IFACE]: set the live MTU of connected dial-in links to the client's "mtu" (default 1280). IFACE = only that link.
+mtu_apply_cb() {
+  [ "$S_MODE" = server ] && [ "$S_DISABLED" != yes ] || return 0
+  local ifc want=${S_MTU:-1280} cur
+  ifc=$(ifc_by_peer "$S_IP")
+  [ -n "$ifc" ] || return 0
+  if [ -n "${MTU_ONLY:-}" ] && [ "$ifc" != "$MTU_ONLY" ]; then return 0; fi
+  cur=$(ip -o link show dev "$ifc" 2>/dev/null | sed -n 's/.* mtu \([0-9]*\).*/\1/p')
+  if [ "$cur" != "$want" ]; then ip link set dev "$ifc" mtu "$want" 2>/dev/null && echo "$S_NAME: $ifc mtu $cur -> $want"; fi
+}
+cmd_mtu_apply() { MTU_ONLY=${1:-}; for_each_site mtu_apply_cb; MTU_ONLY=""; }
+
+mtu_find_cb() {      # finds the tunnel interface and the far address of site MTU_NAME
+  [ "$S_NAME" = "$MTU_NAME" ] || return 0
+  if [ "$S_MODE" = server ]; then MTU_DEV=$(ifc_by_peer "$S_IP"); MTU_ADDR=$S_IP
+  else
+    MTU_DEV="ppp-$S_NAME"
+    MTU_ADDR=$(ip -o -4 addr show dev "$MTU_DEV" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="peer"){sub("/.*","",$(i+1)); print $(i+1); exit}}')
+  fi
+  MTU_FOUND=1
+}
+
+# mtu-test NAME|ADDRESS [IFACE]: the biggest packet (DF set, no fragmentation) that gets an answer, found by halving.
+# NAME = a connected site (the far end of its tunnel); ADDRESS = any address (through the route the server uses, or IFACE).
+# A ppp link is raised to 1500 for the test and put back afterwards. Nothing in the settings is changed.
+# Last line:  RESULT addr=A dev=D current=N max=M suggested=S      (max = size of the biggest packet that passed)
+cmd_mtu_test() {
+  need_root
+  local target=${1:-} via=${2:-} addr="" dev="" cur lo hi mid payload=56 raised=0 pinger_dev=()
+  [ -n "$target" ] || die "Usage: l2tp-gw mtu-test SITE_NAME|ADDRESS [INTERFACE]"
+  command -v ping >/dev/null 2>&1 || die "ping is not installed (apt-get install iputils-ping)"
+  if is_ipv4 "$target"; then
+    addr=$target
+    dev=${via:-$(ip route get "$addr" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1)}
+  else
+    MTU_NAME=$target; MTU_FOUND=""; MTU_DEV=""; MTU_ADDR=""
+    for_each_site mtu_find_cb
+    [ -n "$MTU_FOUND" ] || die "No site named '$target' (use a site name or an IPv4 address)"
+    addr=$MTU_ADDR; dev=${via:-$MTU_DEV}
+    [ -n "$dev" ] && iface_up "$dev" && [ -n "$addr" ] || die "Site '$target' is not connected: nothing to measure"
+  fi
+  [ -n "$dev" ] || die "No route to $addr"
+  [ -z "$via" ] || [ -n "$dev" ] || true
+  pinger_dev=(-I "$dev")
+  if [ -z "$via" ] && is_ipv4 "$target"; then pinger_dev=(); fi
+  cur=$(ip -o link show dev "$dev" 2>/dev/null | sed -n 's/.* mtu \([0-9]*\).*/\1/p')
+  probe() { ping -c 2 -i 0.3 -W 2 -n -q -M do -s "$1" "${pinger_dev[@]}" "$addr" >/dev/null 2>&1; }
+  if ! probe 56; then
+    echo "No answer from $addr even with a tiny packet (the far router may not answer ping, or the path is down)."
+    echo "RESULT addr=$addr dev=$dev current=${cur:-?} max=0 suggested=0"; return 1
+  fi
+  if [[ "$dev" == ppp* ]] && [ -n "$cur" ] && [ "$cur" -lt 1500 ]; then
+    ip link set dev "$dev" mtu 1500 2>/dev/null && raised=1
+    trap 'if [ "'"$raised"'" = 1 ]; then ip link set dev "'"$dev"'" mtu "'"$cur"'" 2>/dev/null; fi' EXIT
+  fi
+  lo=56; hi=1472                                   # payload sizes; packet = payload + 28 bytes (IP + ICMP header)
+  if probe "$hi"; then lo=$hi
+  else
+    while [ "$lo" -lt "$hi" ]; do
+      mid=$(( (lo + hi + 1) / 2 ))
+      if probe "$mid"; then lo=$mid; else hi=$((mid - 1)); fi
+    done
+  fi
+  if [ "$raised" = 1 ]; then ip link set dev "$dev" mtu "$cur" 2>/dev/null; raised=0; trap - EXIT; fi
+  local max=$((lo + 28)) sug
+  sug=$max; if [ "$sug" -gt 1500 ]; then sug=1500; fi
+  if [ "$max" -ge 1500 ]; then echo "Packets up to 1500 bytes pass: no size limit found on this path."
+  else echo "The biggest packet that passes is $max bytes (the link MTU now is ${cur:-?}); a good MTU is $sug."; fi
+  echo "RESULT addr=$addr dev=$dev current=${cur:-?} max=$max suggested=$sug"
+}
+
 # two active dial-in clients with the same network AND the same distance (metric): the traffic is split between them
 # (multipath) and half of it goes to the wrong router. Almost always a typo in one of the networks.
 dup_collect() {
@@ -1715,6 +1797,8 @@ main() {
     timer)  need_root; install_watch_timer ;;
     version) echo "l2tp-gw $VERSION" ;;
     routes-sync) cmd_routes_sync "${2:-}" "${3:-up}" ;;
+    mtu-test)    cmd_mtu_test "${2:-}" "${3:-}" ;;
+    mtu-apply)   cmd_mtu_apply "${2:-}" ;;
     site-sync) cmd_site_sync ;;
     dialin-sync) cmd_dialin_sync ;;
     access-sync) need_root; apply_client_access "${2:-}" ;;
