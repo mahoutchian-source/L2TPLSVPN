@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 CONF_DIR = os.environ.get("CONF_DIR", "/etc/l2tp-gw")
 SITES = os.path.join(CONF_DIR, "sites.conf")
 WEB_CONF = os.path.join(CONF_DIR, "web.conf")
@@ -24,7 +24,7 @@ UNIT = os.environ.get("UNIT_FILE", "/etc/systemd/system/l2tp-gw-web.service")
 KEYS = ["host", "psk", "user", "pass", "mppe", "nat", "routes", "reconnect_every", "reconnect_at", "reconnect_window",
         "quota_gb", "quota_period", "quota_dir", "quota_warn", "ipsec_mode", "mode", "ip", "disabled",
         "access_internet", "access_clients", "access_sites", "lcp_echo", "mtu",
-        "poor_loss", "poor_rtt", "poor_jitter", "poor_alert_min", "poor_reconnect_min", "poor_cooldown_min", "poor_max_day", "poor_window", "poor_outside", "mtu_min", "mtu_max", "mtu_margin"]    # (access_*: "no" = blocked; empty = allowed, not written)
+        "poor_loss", "poor_rtt", "poor_jitter", "poor_alert_min", "poor_reconnect_min", "poor_cooldown_min", "poor_max_day", "poor_window", "poor_outside", "mtu_min", "mtu_max", "mtu_step"]    # (access_*: "no" = blocked; empty = allowed, not written)
 OPTIONAL = set(KEYS[6:])      # written only when not empty
 SERVER_SKIP = ("host", "psk", "mppe")    # a dial-in (mode = server) site has no address to dial and uses the shared IPsec secret
 DIALIN_CONF = os.path.join(CONF_DIR, "dialin.conf")
@@ -2166,6 +2166,7 @@ def edit_page(sid, name=None, msg=None, vals=None):
     def acc(k, title, hint):      # a ticked box = allowed (the default; only "no" in the file means blocked)
         return ("<label class=check><input type=checkbox name=%s value=yes %s><span>%s<small>%s</small></span></label>"
                 % (k, "" if s.get("access_" + k[4:]) == "no" else "checked", title, hint))
+    mtu_def = read_qdefaults().get("mtu_default_out") or "1280"
     acc_html = ("<fieldset><legend>What this site may reach</legend>"
                 "<p class=hint>Applied at once, only for this site; the tunnels are not restarted. Un-tick to block (both directions).</p>"
                 + acc("acc_internet", "The internet through this server", "Traffic that arrives from this site and leaves the server toward the internet.")
@@ -2173,9 +2174,10 @@ def edit_page(sid, name=None, msg=None, vals=None):
                 + acc("acc_clients", "The dial-in clients", "No traffic between this site and the routers that dial in.")
                 + "</fieldset>"
                 + "<fieldset><legend>Packet size (MTU)</legend>"
-                "<label for=mtu>MTU of this tunnel<span class=hint>A number from 576 to 1500, or <b>auto</b> (the server measures and chooses inside the range below). Empty = 1280. A new value is used the next time the tunnel connects. "
-                "Use the Measure MTU page to find the right number.</span></label>"
-                "<input type=text id=mtu name=mtu value='" + e(s.get("mtu", "")) + "' class=mono placeholder='1280 or auto'>"
+                "<label for=mtu>MTU of this tunnel<span class=hint>A number from 576 to 1500, or <b>auto</b> (the server tests and chooses inside the range below). Empty = the default from Settings (now " + e(mtu_def) + "). "
+                "A fixed number is never changed by the server, it is only checked. A new value is used the next time the tunnel connects. "
+                "Use the Measure MTU page to test the size now.</span></label>"
+                "<input type=text id=mtu name=mtu value='" + e(s.get("mtu", "")) + "' class=mono placeholder='" + e(mtu_def) + "'>"
                 "<p class=hint>The range is used only when the MTU is <b>auto</b>. Empty boxes use the defaults from Settings.</p>" + mtu_fieldset(s) + "</fieldset>" + pq_fieldset(s))
     keep = "Leave empty to keep the current one." if editing else ""
     ph = " placeholder='unchanged'" if editing else ""
@@ -2333,13 +2335,15 @@ def dialin_list_html(sid):
         if up:
             up_n += 1
         cls, txt = ("down", "Disabled") if off else ("up", "Connected") if up else ("half", "Waiting for the router to dial in")
-        link = st["links"].get(n)
-        since = ""
-        if up and link:
-            mins = int((time.time() - link["since"]) // 60)
-            since = "up %dh %02dm" % (mins // 60, mins % 60)
+        li = link_info().get(n) if up else None
+        age = li[1] if li else None
+        pub = li[2] if li else ""
+        info = ""
+        if up:
+            info = ("<div class=qtxt>router address <b class=mono>%s</b></div><div class=qtxt>connected for <b>%s</b></div>"
+                    % (e(pub or "not known"), e(q_dur(age)) if age is not None else "not known"))
         dl = read_daily(n).get(today, [0, 0])
-        extra = ("<div class='speed mono' data-speed='%s'><span class=l>&darr; -</span><span class=l>&uarr; -</span></div>" % e(n)) if up else ""
+        extra = info + ("<div class='speed mono' data-speed='%s'><span class=l>&darr; -</span><span class=l>&uarr; -</span></div>" % e(n)) if up else ""
         extra += "<div class=qtxt>today &darr; %s &uarr; %s</div>" % (e(fmt_bytes(dl[0], unit)), e(fmt_bytes(dl[1], unit)))
         extra += quota_html(s, st, unit)
         chips = "".join("<span class='chip mono'>%s</span>" % e(r.strip()) for r in s.get("routes", "").split(",") if r.strip())
@@ -2364,7 +2368,7 @@ def dialin_list_html(sid):
                  "<input type=hidden name=csrf value='%s'><input type=hidden name=name value='%s'><button class='btn sm del'>Delete</button></form>"
                  "</div></div>"
                  % (cls, e(n), e(s.get("user", "")), e(s.get("ip", "")), cls, txt,
-                    e(ppp.get(n, "").replace(" peer ", " → ").replace("/32", "")) if up else since, extra,
+                    e(ppp.get(n, "").replace(" peer ", " → ").replace("/32", "")) if up else "", extra,
                     chips or "<span class=none>No routes</span>", tags,
                     e(n), "" if up else " disabled title='Not connected'", e(n), csrf, e(n), "" if up else " disabled",
                     csrf, e(n), "Enable" if off else "Disable", e(n), e(n), e(n), csrf, e(n)))
@@ -2429,6 +2433,7 @@ def dialin_edit_page(sid, name=None, msg=None, vals=None):
     def acc(k, title, hint):      # a ticked box = allowed (the default; only "no" in the file means blocked)
         return ("<label class=check><input type=checkbox name=%s value=yes %s><span>%s<small>%s</small></span></label>"
                 % (k, "" if s.get("access_" + k[4:]) == "no" else "checked", title, hint))
+    mtu_def_in = read_qdefaults().get("mtu_default_in") or "1280"
     acc_html = ("<fieldset><legend>What this client may reach</legend>"
                 "<p class=hint>Applied at once, only to this client; other tunnels are not touched. Un-tick to block.</p>"
                 + acc("acc_internet", "The internet through this server", "Traffic that leaves the server toward the internet.")
@@ -2436,9 +2441,10 @@ def dialin_edit_page(sid, name=None, msg=None, vals=None):
                 + acc("acc_sites", "The outgoing sites (the tunnels this server dials)", "Blocked both ways.")
                 + "</fieldset>"
                 + "<fieldset><legend>Packet size (MTU)</legend>"
-                "<label for=mtu>MTU of this client<span class=hint>A number from 576 to 1500, or <b>auto</b> (the server measures and chooses inside the range below). Empty = 1280. Applied to the live connection at once. "
-                "Use the Measure MTU page to find the right number.</span></label>"
-                "<input type=text id=mtu name=mtu value='" + e(s.get("mtu", "")) + "' class=mono placeholder='1280 or auto'>"
+                "<label for=mtu>MTU of this client<span class=hint>A number from 576 to 1500, or <b>auto</b> (the server tests and chooses inside the range below). Empty = the default from Settings (now " + e(mtu_def_in) + "). "
+                "A fixed number is never changed by the server, it is only checked. Applied to the live connection at once; the router sees one shared size for all dial-in clients (see Settings). "
+                "Use the Measure MTU page to test the size now.</span></label>"
+                "<input type=text id=mtu name=mtu value='" + e(s.get("mtu", "")) + "' class=mono placeholder='" + e(mtu_def_in) + "'>"
                 "<p class=hint>The range is used only when the MTU is <b>auto</b>. Empty boxes use the defaults from Settings.</p>" + mtu_fieldset(s) + "</fieldset>" + pq_fieldset(s))
     body = ("<div class=bar><h1>%s</h1></div>"
             "<form class=form method=post action=/dialin/save autocomplete=off>"
@@ -2796,15 +2802,23 @@ def mtu_status():
     return out
 
 
+def eff_mtu(s):
+    """the MTU setting of a connection: its own value, else the default of Settings for its kind (outgoing / dial-in), else 1280"""
+    v = s.get("mtu")
+    if v:
+        return v
+    return read_qdefaults().get("mtu_default_in" if is_server(s) else "mtu_default_out") or "1280"
+
+
 def mtu_chip(s, ms, force=False):
     """the MTU chip of one connection; coloured by the last check: green passes, amber does not pass / the router asks for less"""
     e = html.escape
-    want = s.get("mtu") or "1280"
+    want = eff_mtu(s)
     st = ms.get(s["name"])
     if want == "auto":
         want = "auto " + (st[1] if st else "...")
     if not st:
-        return ("<span class='chip tag'>MTU %s</span>" % e(want)) if (s.get("mtu") or force) else ""
+        return ("<span class='chip tag'>MTU %s</span>" % e(want)) if (s.get("mtu") or force or want != "1280") else ""
     state, _, cur = st
     if state == "ok":
         return "<span class='chip tag mtuok' title='Checked: a packet of this size gets through the tunnel'>MTU %s</span>" % e(want)
@@ -2822,20 +2836,25 @@ def mtu_chip(s, ms, force=False):
 
 
 def mtu_road_rows(name, s, cur):
-    """lines about the road of one tunnel, from the automatic MTU routine (file mtu-road/NAME): what is known and what is wrong"""
+    """lines about the road of one tunnel, from the automatic MTU routine (file mtu-road/NAME): what was tested and what is wrong"""
     rows = []
+    auto = eff_mtu(s) == "auto"
     try:
         f = open(os.path.join(STATE_DIR, "mtu-road", name)).read().split()
         ts, outer, inner, sug, fr, mru = [int(x) if x.isdigit() else x for x in f[:6]]
     except (OSError, ValueError):
-        if s.get("mtu") == "auto":
-            rows.append(("Automatic MTU", "on: the first measurement comes within a few minutes of the link coming up"))
+        if auto:
+            rows.append(("Automatic MTU", "on: the first test comes about a minute after the link is up"))
         return rows
     age = int((time.time() - ts) // 60) if isinstance(ts, int) else 0
     live = int(cur) if cur and cur.isdigit() else 0
-    if s.get("mtu") == "auto":
-        rows.append(("Automatic MTU", "on, measured %d min ago; the road carries %s, the link uses %s" % (age, sug, cur or "-")))
-    rows.append(("Road outside the tunnel", ("%s bytes (the tunnel wrapping needs about 101 more than the MTU)" % outer) if outer else "not measured (the far router does not answer ping)"))
+    if auto:
+        if sug:
+            rows.append(("Automatic MTU", "on, tested %d min ago: a packet of %s passes; the link uses %s" % (age, sug, cur or "-")))
+        else:
+            rows.append(("Automatic MTU", "on, tested %d min ago: NO size passed; the link uses %s" % (age, cur or "-")))
+    rows.append(("Road outside the tunnel", ("%s bytes (the tunnel wrapping needs about 101 more than the MTU)" % outer) if outer else
+                 "not measured (the router's public address is not known, or it does not answer ping); this does not change the test inside the tunnel"))
     if outer and live and live + 101 > outer:
         rows.append(("WARNING", "MTU %d + 101 = %d is more than the outside road %d: packets are split outside" % (live, live + 101, outer)))
     rows.append(("Split packets (big UDP)", {"ok": "a packet bigger than the MTU still arrives (it is split and put together again)",
@@ -3362,11 +3381,18 @@ def mtu_page(sid, msg=None, result=None):
         for info in info_all:
             sug = int(info.get("suggested", "0") or 0)
             site = info.get("site", "")
-            if sug < 576:
+            passed = info.get("pass", "")
+            if passed == "yes":
+                res += "<p>Way <b class=mono>%s</b>: the MTU now, <b class=mono>%s</b>, PASSES. Nothing needs to change.</p>" % (e(info.get("dev", "?")), e(info.get("current", "?")))
                 continue
-            res += "<p>Way <b class=mono>%s</b>: suggested MTU <b class=mono>%d</b> (inside the tunnel up to %s passed%s, now: %s)</p>" % (
-                e(info.get("dev", "?")), sug, e(info.get("max", "?")),
-                ", outside road %s" % e(info["outer"]) if info.get("outer", "0") != "0" else "", e(info.get("current", "?")))
+            if sug < 576:
+                if passed == "no":
+                    res += "<p>Way <b class=mono>%s</b>: the MTU now, %s, does NOT pass, and no smaller size down to 576 passes either.</p>" % (e(info.get("dev", "?")), e(info.get("current", "?")))
+                continue
+            if passed == "no":
+                res += "<p>Way <b class=mono>%s</b>: the MTU now, %s, does NOT pass. The biggest size that passes: <b class=mono>%d</b>.</p>" % (e(info.get("dev", "?")), e(info.get("current", "?")), sug)
+            else:
+                res += "<p>Way <b class=mono>%s</b>: biggest size that passes <b class=mono>%d</b> (the MTU now: %s)</p>" % (e(info.get("dev", "?")), sug, e(info.get("current", "?")))
             if site in kinds:
                 k, u = kinds[site]
                 res += ("<form method=post action=/mtu/set><input type=hidden name=csrf value='%s'><input type=hidden name=name value='%s'>"
@@ -3392,8 +3418,8 @@ def mtu_page(sid, msg=None, result=None):
                   "<form method=post action=/mtu/verify><input type=hidden name=csrf value='%s'>"
                   "<button class=btn data-busy='Checking...'>Check now</button></form></fieldset>"
                   % (trows or "<p class=hint>No result yet. The first check runs within 5 minutes, or press the button.</p>", e(csrf_of(sid))))
-    body = ("<div class=bar><div><h1>Measure MTU</h1><div class=sum>Finds the largest packet that passes without being cut. "
-            "It only suggests a value; nothing changes until you press the button.</div></div></div>"
+    body = ("<div class=bar><div><h1>Measure MTU</h1><div class=sum>Tests now whether a packet of exactly the MTU of the connection goes through and comes back. "
+            "If it does not, it tells the biggest size that does. Nothing changes until you press the button.</div></div></div>"
             "<form class=form method=post action=/mtu/run autocomplete=off><input type=hidden name=csrf value='%s'>"
             "<fieldset><legend>What to measure</legend>"
             "<label for=t1>A connection of yours<span class=hint>The tunnel must be connected.</span></label>"
@@ -3479,10 +3505,11 @@ def q_stats(rows, secs, now=None):
 # ---------- quality limits: per connection (in sites.conf) with defaults (quality.conf, edited on the Settings page) ----------
 QUALITY_CONF = os.path.join(CONF_DIR, "quality.conf")
 PQ_KEYS = ["poor_loss", "poor_rtt", "poor_jitter", "poor_alert_min", "poor_reconnect_min", "poor_cooldown_min", "poor_max_day", "poor_window", "poor_outside",
-           "mtu_min", "mtu_max", "mtu_margin", "mtu_auto_min", "mtu_auto_max_day"]      # (the last two exist only as defaults on the Settings page)
+           "mtu_min", "mtu_max", "mtu_step", "mtu_auto_min", "mtu_auto_max_day", "mtu_default_out", "mtu_default_in"]      # (the last four exist only as defaults on the Settings page)
 PQ_BUILTIN = {"poor_loss": "5", "poor_rtt": "400", "poor_jitter": "120", "poor_alert_min": "5", "poor_reconnect_min": "0",
               "poor_cooldown_min": "", "poor_max_day": "4", "poor_window": "", "poor_outside": "yes",
-              "mtu_min": "1250", "mtu_max": "1400", "mtu_margin": "20", "mtu_auto_min": "30", "mtu_auto_max_day": "6"}
+              "mtu_min": "1250", "mtu_max": "1400", "mtu_step": "20", "mtu_auto_min": "30", "mtu_auto_max_day": "6",
+              "mtu_default_out": "1280", "mtu_default_in": "1280"}
 
 
 def read_qdefaults():
@@ -3523,10 +3550,14 @@ def check_pq(d):
                 num("poor_max_day", 1, 48, "Reconnects per day")):
         if err:
             return err
-    for err in (num("mtu_min", 576, 1500, "Lowest MTU"), num("mtu_max", 576, 1500, "Highest MTU"), num("mtu_margin", 0, 300, "Safety margin (bytes)"),
+    for err in (num("mtu_min", 576, 1500, "Lowest MTU"), num("mtu_max", 576, 1500, "Highest MTU"), num("mtu_step", 5, 200, "Step (bytes)"),
                 num("mtu_auto_min", 5, 1440, "Minutes between automatic MTU measurements"), num("mtu_auto_max_day", 1, 48, "Most automatic MTU changes a day")):
         if err:
             return err
+    for k, what in (("mtu_default_out", "MTU of outgoing sites without their own value"), ("mtu_default_in", "MTU of dial-in clients without their own value")):
+        v = d.get(k, "")
+        if v and v != "auto" and not (re.fullmatch(r"\d{3,4}", v) and 576 <= int(v) <= 1500):
+            return "%s must be auto or a number from 576 to 1500" % what
     if d.get("mtu_min") and d.get("mtu_max") and int(d["mtu_min"]) > int(d["mtu_max"]):
         return "The lowest MTU must not be bigger than the highest MTU"
     v = d.get("poor_reconnect_min", "")
@@ -3586,7 +3617,11 @@ def pq_fieldset(s, settings_page=False):
              + outsel)
     qset = "<fieldset><legend>Quality limits and automatic reconnect</legend>" + intro + qbody + "</fieldset>"
     if settings_page:
-        return "<fieldset><legend>Automatic MTU (the size is learned inside this range)</legend>" + mtu_fieldset(s, True) + "</fieldset>" + qset
+        return ("<fieldset><legend>Packet size (MTU)</legend>"
+                "<p class=hint>Auto: the link starts at the highest size, is tested a minute after it is up, goes down by the step until a packet of that size passes, and every N minutes tries one step up. "
+                "A change is made by disconnecting and connecting the tunnel again. A fixed number is never changed, only checked. "
+                "All dial-in routers are offered one shared size (the biggest any dial-in client may use); each client link on this server follows its own test.</p>"
+                + mtu_fieldset(s, True) + "</fieldset>" + qset)
     return qset
 
 
@@ -3600,10 +3635,12 @@ def mtu_fieldset(s, settings_page=False):
         return ("<label for=%s%s>%s<span class=hint>%s</span></label><input type=text id=%s%s name=%s%s value='%s' class=mono placeholder='%s'>"
                 % (pre, k, title, hint, pre, k, pre, k, e(cur(k)), e(d.get(k) or PQ_BUILTIN[k])))
     out = ("<div class=two><div>" + inp("mtu_min", "Lowest MTU (auto)", "The size never goes below this") + "</div>"
-           "<div>" + inp("mtu_max", "Highest MTU (auto)", "Never above this. Also what the tunnel asks for when it connects") + "</div></div>"
-           + inp("mtu_margin", "Safety margin (bytes)", "Auto takes a little less than the biggest size that passes"))
+           "<div>" + inp("mtu_max", "Highest MTU (auto)", "Auto starts here when the tunnel connects") + "</div></div>"
+           + inp("mtu_step", "Step (bytes)", "Auto goes down, and later tries up, by this much at a time"))
     if settings_page:
-        out += ("<div class=two><div>" + inp("mtu_auto_min", "Measure every (minutes)", "Auto MTU, 5 or more") + "</div>"
+        out += ("<div class=two><div>" + inp("mtu_default_out", "MTU of outgoing sites with no value of their own", "A number from 576 to 1500, or auto") + "</div>"
+                "<div>" + inp("mtu_default_in", "MTU of dial-in clients with no value of their own", "A number from 576 to 1500, or auto") + "</div></div>"
+                "<div class=two><div>" + inp("mtu_auto_min", "Test every (minutes)", "Auto MTU, 5 or more") + "</div>"
                 "<div>" + inp("mtu_auto_max_day", "Most changes in 24 hours", "After that the size stays and you are told") + "</div></div>")
     return out
 
@@ -3668,7 +3705,32 @@ def q_where(st, grade):
 Q_GAP = 180      # seconds: no log line for longer than this = the server (or the collector) was off, so the connection counts as dropped
 
 
-def q_sessions(rows, now=None):
+LINKINFO = {"t": 0.0, "d": {}}
+
+
+def link_info():
+    """name -> (interface, seconds the connection is up or None, public address of the router or ''), from 'l2tp-gw link-info'.
+    The seconds are the age of the pppd process: real, not guessed from the minute log. Cached for 5 seconds."""
+    now = time.time()
+    if now - LINKINFO["t"] < 5:
+        return LINKINFO["d"]
+    d = {}
+    rc, out = run([GW, "link-info"], 15)
+    if rc == 0:
+        for line in out.splitlines():
+            f = line.split()
+            if len(f) == 4:
+                d[f[0]] = (f[1], int(f[2]) if f[2].isdigit() else None, "" if f[3] == "-" else f[3])
+    LINKINFO["t"], LINKINFO["d"] = now, d
+    return d
+
+
+def link_age(name):
+    v = link_info().get(name)
+    return v[1] if v else None
+
+
+def q_sessions(rows, now=None, age=None):
     """connected since (the current connection), last drop, drops in 24 h, time connected in the last 24 h.
     A hole in the minute log longer than Q_GAP seconds counts as a drop (a restarted server must not keep the old connection time)."""
     now = now or time.time()
@@ -3691,6 +3753,13 @@ def q_sessions(rows, now=None):
         while i > 0 and rows[i - 1]["up"] and rows[i]["t"] - rows[i - 1]["t"] <= Q_GAP:
             i -= 1
         since, exact = rows[i]["t"], i > 0
+    if age is not None and rows and rows[-1]["up"]:
+        # the real age of the connection (pppd process): a quick disconnect and reconnect that the minute log did not see is a drop too
+        real = now - age
+        if since is not None and real > since + Q_GAP and real > now - 86400 and (last_drop is None or last_drop < real - Q_GAP):
+            last_drop = real
+            flaps += 1
+        since, exact = real, True
     span = min(86400, now - rows[0]["t"]) if rows else 0
     return {"since": since, "exact": exact, "last_drop": last_drop, "flaps": flaps, "have": bool(rows), "up_secs": up_secs, "span": span}
 
@@ -3704,6 +3773,8 @@ def q_dur(secs):
         return "%d d %d h" % (d, h)
     if h:
         return "%d h %d min" % (h, m)
+    if not h and not m:
+        return "%d s" % secs
     return "%d min" % m
 
 
@@ -3909,7 +3980,7 @@ def quality_page(sid, msg=None, recheck=False):
         st5, st1h = q_stats(rows, 300, now), q_stats(rows, 3600, now)
         cls, word, _ = q_grade(st5, q_th(s))
         cnt[cls] += 1
-        ses = q_sessions(rows, now)
+        ses = q_sessions(rows, now, link_age(n))
         if ses["since"]:
             up_txt = ("%s%s" % ("" if ses["exact"] else "over ", q_dur(now - ses["since"])))
         else:
@@ -3979,7 +4050,7 @@ def conn_page(sid, name, win="6h", msg=None, recheck=False):
     st5 = q_stats(rows, 300, now)
     cls, word, why = q_grade(st5, q_th(s))
     diag = q_diag(st5, cls)
-    ses = q_sessions(rows, now)
+    ses = q_sessions(rows, now, link_age(name))
     # --- header
     sub = ("dial-in client, fixed address %s" % e(s.get("ip", "?"))) if server else ("outgoing site, router %s" % e(s.get("host", "?")))
     state = ("<span class='state off'>Switched off</span>" if off else ("<span class='state up'>Connected</span>" if up else "<span class='state down'>Not connected</span>"))
@@ -4030,15 +4101,15 @@ def conn_page(sid, name, win="6h", msg=None, recheck=False):
     ms = mtu_status()
     mchip = mtu_chip(s, ms, True)
     mru = ""
-    if cur and s.get("mtu") != "auto" and (s.get("mtu") or cur):
-        want = s.get("mtu") or "1280"
+    if cur and eff_mtu(s) != "auto":
+        want = eff_mtu(s)
         if cur and cur.isdigit() and want.isdigit() and int(cur) < int(want):
             mru = " The router asked for a smaller size (its MRU) when the tunnel came up: %s." % cur
     sec_rows = [("Encryption", enc), ("IPsec", ("up for %s" % ii["age"]) if ii.get("age") else ("up" if ipsec_up else ("shared by all dial-in clients" if server else "-"))),
                 ("IPsec ciphers", " / ".join(x for x in (ii.get("ike"), ii.get("esp")) if x) or "-"),
                 ("IPsec rule", s.get("ipsec_mode") or "heal") if not server else ("PPP login", "user %s" % s.get("user", "?")),
                 ("Interface", dev or "-"), ("Address", ppp.get(name, "-").replace(" peer ", " to ")),
-                ("MTU set / link now", "%s / %s" % (s.get("mtu") or "1280 (default)", cur or "-")),
+                ("MTU set / link now", "%s / %s" % (eff_mtu(s) + ("" if s.get("mtu") else " (default of Settings)"), cur or "-")),
                 ("TCP segment size (MSS)", ("%d bytes (link MTU - 40), cut by the server both ways" % (int(cur) - 40)) if cur.isdigit() else "-"),
                 ("Biggest UDP packet that passes whole", ("%d bytes (link MTU - 28); bigger ones are split" % (int(cur) - 28)) if cur.isdigit() else "-")]
     sec_rows += mtu_road_rows(name, s, cur)
@@ -4885,8 +4956,11 @@ class H(http.server.BaseHTTPRequestHandler):
             err = err or check_pq(qd)
             if err:
                 return self.send(200, settings_page(sid, (False, err), dict(new, telegram_token=c["telegram_token"])))
+            before = read_qdefaults()
             write_qdefaults(qd)
             write_notify(new)
+            if any(before.get(k, "") != qd.get(k, "") for k in ("mtu_default_in", "mtu_max")):
+                run([GW, "dialin-sync"], 60)      # the one size the dial-in routers are offered depends on these (written without a restart)
             FLASH[sid] = (True, "Alert settings saved.")
             return self.redirect("/settings")
         if u.path.startswith("/routes/") and routes_post(self, sid, u.path, f):
