@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.4.4"
+VERSION = "1.4.5"
 CONF_DIR = os.environ.get("CONF_DIR", "/etc/l2tp-gw")
 SITES = os.path.join(CONF_DIR, "sites.conf")
 WEB_CONF = os.path.join(CONF_DIR, "web.conf")
@@ -2275,7 +2275,7 @@ def edit_page(sid, name=None, msg=None, vals=None):
 # "mode = server" in sites.conf. A change to one client uses "l2tp-gw dialin-sync" (nothing restarts). A change of the
 # shared settings uses "l2tp-gw apply" (xl2tpd and strongSwan restart: all tunnels reconnect within a minute).
 def read_dialin():
-    c = {"enabled": "no", "public_ip": "", "psk": "", "pool": "10.99.99.0/24", "local": ""}
+    c = {"enabled": "no", "public_ip": "", "psk": "", "pool": "10.99.99.0/24", "local": "", "dns_every": ""}
     try:
         for line in open(DIALIN_CONF):
             if "=" in line and not line.lstrip().startswith("#"):
@@ -2293,7 +2293,7 @@ def write_dialin(c):
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write("# l2tp-gw dial-in settings (written by l2tp-gw-web). Contains the IPsec secret: keep it private.\n")
-        for k in ("enabled", "public_ip", "psk", "pool", "local"):
+        for k in ("enabled", "public_ip", "psk", "pool", "local", "dns_every"):
             if c.get(k) or k in ("enabled", "pool"):
                 f.write("%s = %s\n" % (k, c.get(k, "")))
     os.replace(tmp, DIALIN_CONF)
@@ -2419,16 +2419,18 @@ def dialin_page(sid, msg=None, vals=None):
             "<fieldset><legend>Server settings</legend>"
             "<label class=check><input type=checkbox name=enabled value=yes %s><span>Accept dial-in connections"
             "<small>Opens UDP 1701 (only through IPsec) in this server's own firewall.</small></span></label>"
-            "<label for=pub>Public address of this server<span class=hint>Static IP or DNS name that the routers connect to. Shown in the setup instructions.</span></label>"
+            "<label for=pub>Public address of this server<span class=hint>Static IP or DNS name that the routers connect to. Shown in the setup instructions. A DNS name is looked up again and again; when its address changes, all dial-in tunnels are cut once and reconnect.</span></label>"
             "<input type=text id=pub name=public_ip value='%s' class=mono>"
+            "<label for=dnse>Look at the DNS name every (minutes)<span class=hint>1 to 1440. Empty = 1. Used only when the address above is a name.</span></label>"
+            "<input type=text id=dnse name=dns_every value='%s' class=mono inputmode=numeric>"
             "<label for=dpsk>IPsec secret (the same for all clients)<span class=hint>Leave empty to keep the current one. Use Generate for a new random secret; "
             "every router must then be updated.</span></label>"
             "<div class=pw><input type=password id=dpsk name=psk placeholder='%s' class=mono>"
             "<button type=button class=btn onclick=\"showpw('dpsk',this)\">Show</button>"
             "<button type=button class=btn onclick=\"gensecret('dpsk')\">Generate</button></div>"
-            "<div class=two><div><label for=pool>Client address pool<span class=hint>Private network, /8 to /30. Never used elsewhere.</span></label>"
+            "<div class=two><div><label for=pool>Client address pool<span class=hint>Private network, /8 to /30. Never used elsewhere. Clients and the server may use addresses outside it; that only gives a warning.</span></label>"
             "<input type=text id=pool name=pool value='%s' class=mono></div>"
-            "<div><label for=dlocal>This server inside the pool<span class=hint>Empty = first address</span></label>"
+            "<div><label for=dlocal>Address of this server<span class=hint>Normally inside the pool (outside only gives a warning). Empty = first address of the pool.</span></label>"
             "<input type=text id=dlocal name=local value='%s' class=mono></div></div></fieldset>"
             "<p class=hint>Saving the settings restarts the VPN services: <b>all tunnels reconnect within about a minute</b>. "
             "In the Lightsail firewall open UDP 500 and UDP 4500 from any address (IPsec). Port 1701 stays closed to the outside.</p>"
@@ -2436,7 +2438,7 @@ def dialin_page(sid, msg=None, vals=None):
             "<script>function gensecret(id){var a='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789',o='',b=new Uint32Array(20);"
             "crypto.getRandomValues(b);for(var i=0;i<20;i++)o+=a[b[i]%%a.length];var x=document.getElementById(id);x.value=o;x.type='text'}</script>"
             % (state, dialin_list_html(sid), e(csrf_of(sid)), "checked" if on else "", e(c["public_ip"]),
-               "unchanged" if c["psk"] else "required when you turn dial-in on (empty = generated)", e(c["pool"]), e(c["local"])))
+               e(c.get("dns_every", "")), "unchanged" if c["psk"] else "required when you turn dial-in on (empty = generated)", e(c["pool"]), e(c["local"])))
     return page("Dial-in", body, sid, msg, "/dialin")
 
 
@@ -2479,7 +2481,7 @@ def dialin_edit_page(sid, name=None, msg=None, vals=None):
             "<div class=pw><input type=%s id=pass name=pass value='%s' class=mono%s>"
             "<button type=button class=btn onclick=\"showpw('pass',this)\">%s</button>"
             "<button type=button class=btn onclick=\"gensecret('pass')\">Generate</button></div>"
-            "<label for=ip>Fixed address of this client<span class=hint>Inside the pool %s. Each client has its own.</span></label>"
+            "<label for=ip>Fixed address of this client<span class=hint>Normally inside the pool %s (outside only gives a warning). Each client has its own.</span></label>"
             "<input type=text id=ip name=ip value='%s' required class=mono></fieldset>"
             "<fieldset><legend>Traffic</legend>"
             "<label class=check><input type=checkbox name=nat value=yes %s><span>NAT traffic that leaves toward this client"
@@ -5278,6 +5280,9 @@ class H(http.server.BaseHTTPRequestHandler):
         new["public_ip"] = f.get("public_ip", "").strip()
         new["pool"] = f.get("pool", "").strip() or "10.99.99.0/24"
         new["local"] = f.get("local", "").strip()
+        new["dns_every"] = f.get("dns_every", "").strip()
+        if new["dns_every"] and not (new["dns_every"].isdigit() and 1 <= int(new["dns_every"]) <= 1440):
+            return self.send(200, dialin_page(sid, (False, "The look-up time must be a number of minutes from 1 to 1440."), new))
         psk = f.get("psk", "").strip()
         if psk:
             new["psk"] = psk
@@ -5315,7 +5320,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 if applied:
                     run([GW, "apply"])            # put the services back to the old settings
                 return self.send(200, dialin_page(sid, (False, "Not applied, old settings restored.\n" + out), new))
-        FLASH[sid] = (True, "Dial-in settings saved and applied. Tunnels reconnect within about a minute.")
+        wrc, wout = run([GW, "dialin-warn"])
+        wtxt = wout.replace("WARN  ", "").strip() if wrc == 0 else ""
+        FLASH[sid] = (True, "Dial-in settings saved and applied. Tunnels reconnect within about a minute." + (("\nWarning: " + wtxt) if wtxt else ""))
         return self.redirect("/dialin")
 
     def dialin_save(self, sid, f):
@@ -5355,7 +5362,9 @@ class H(http.server.BaseHTTPRequestHandler):
         if old is not None and new.get("disabled") != "yes" and new["name"] == orig:
             bg_cut("cut", new["name"])
             cutnote = " The tunnel is being cut once; the router connects again by itself."
-        FLASH[sid] = (True, self.dialin_note(out) + cutnote)
+        wrc, wout = run([GW, "dialin-warn"])
+        wtxt = "\n".join(l[6:] for l in wout.splitlines() if l.startswith("WARN  ")) if wrc == 0 else ""
+        FLASH[sid] = (True, self.dialin_note(out) + cutnote + (("\nWarning: " + wtxt) if wtxt else ""))
         return self.redirect("/dialin" if old is not None else "/dialin/howto?name=" + new["name"])
 
     def mtu_run(self, sid, f):

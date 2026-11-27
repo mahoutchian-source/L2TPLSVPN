@@ -9,6 +9,8 @@
 - IPv4 only. ESP counters of sites that share one IKE SA can be attributed to the wrong site; traffic counting uses ppp counters, so it is not affected.
 - Possible IP change of the Setuda sites seen in status: never verified in logs.
 
+- (1.4.5) The server has ONE address on every dial-in link (`local`): pppd gets the local address from the shared `[lns]` option and xl2tpd chooses `[lns]` only by the caller address. A different server-side address per client would need a way to give pppd a per-user local address; none was found (not testable in the sandbox). Ali asked for it on 2026-11-27: open.
+- (1.4.5) The DNS name of the public address is checked every `dns_every` minutes, but a re-apply caused by it runs at most once in 10 minutes (the old DDNS guard).
 - MTU and quality tests (1.4.4) are tested only with stubs (dev/t37, t29, t31, t34, t36). Real-server proof is still missing for: `ip l2tp show tunnel` (the public address of a dial-in client), the pppd pid file `/var/run/IFACE.pid`, the real answer of a MikroTik to a DF ping bigger than its limit (silent drop or "Frag needed"), and the cut commands on live tunnels.
 - **A DF ping through the tunnel cannot see splitting outside the tunnel** (the wrapped packet may be split by the road and still arrive). The 1.4.3 "+101" warning was removed on Ali's decision; the test only says whether a packet of the size passes through the tunnel.
 - **Silent black holes:** many routers never send "packet too big". So the trigger is "too-big message OR (small packets >= 71% and size-packets < 71%)". A tunnel that loses many small packets too gets "no usable answer" and is not stepped.

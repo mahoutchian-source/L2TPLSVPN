@@ -49,6 +49,7 @@ Rule: the web never edits system config itself; it edits `/etc/l2tp-gw/*` and ca
     cd dev/t28 && bash run.sh   # 1.0.1 features (require firewall, PPP keep-alive, IPsec re-check, multipath status, duplicate networks, Persian password); needs `ip` (apt install iproute2)
     cd dev/t29 && bash run.sh   # 1.0.3 MTU (per-connection mtu, mtu-apply, mtu-test with a ping stub, panel page); needs `ip`
     cd dev/t36 && bash run.sh   # 1.4.1/1.4.2 quality list, shared address, ring, no-jump script
+    cd dev/t38 && bash run.sh   # 1.4.5 dial-in: addresses outside the pool (warning only), pool change with clients, public address as a DNS name, look-up interval, unresolved name, panel (37 checks; stub bin/getent answers from dns/NAME)
     cd dev/t37 && bash run.sh   # 1.4.4 the 22 rules: MTU/MRU, tests, steps, floor, cut, colours, Settings, pages (129 checks). The ping stub (t37/bin/ping, also in t29) prints a ping summary, refuses a DF packet over the link MTU, can answer 'Frag needed' (file toobig), can lose packets (pingloss[.ADDR]) and send a real packet through a tun held by dev/tunhold.py (file sendreal)
     cd dev/t31 && bash run.sh   # quality-sample, alert (uses Q_FORCE=1 to test every call), pages
     cd dev/t34 && bash run.sh   # per-connection limits and automatic reconnect (the lock bug was found here)
