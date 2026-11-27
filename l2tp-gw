@@ -11,6 +11,8 @@
 #   l2tp-gw check          health check of everything (services, IPsec, PPP, ESP, routes, NAT)
 #   l2tp-gw mtu-test NAME|ADDRESS [IFACE]   measure the biggest packet that passes (a connected site, or any address)
 #   l2tp-gw reconnect NAME reconnect ONE site (other tunnels are not touched)
+#   l2tp-gw cut NAME       cut ONE connection so new settings are used (dial-in: disconnect, outgoing: reconnect)
+#   l2tp-gw cut-all in|out cut all dial-in clients (in) or all outgoing sites (out), one after the other
 #   l2tp-gw logs [NAME] [N] last N log lines (only lines about NAME if given)
 #   l2tp-gw backup [FILE]  copy the sites file (default: /root/l2tp-gw-sites-DATE.conf)
 #   l2tp-gw restore FILE   replace the sites file with FILE (checked first) and apply
@@ -35,7 +37,7 @@ set -euo pipefail
 : "${XL2TPD_CONF:=/etc/xl2tpd/xl2tpd.conf}"
 : "${SECRETS:=/etc/ipsec.secrets}"
 : "${NO_RESTART:=0}"
-VERSION="1.4.3"
+VERSION="1.4.4"
 SITES="$CONF_DIR/sites.conf"
 DIALIN="${DIALIN_FILE:-$CONF_DIR/dialin.conf}"      # settings of the dial-in server (see "dial-in" below)
 TAG="# managed by l2tp-gw"
@@ -54,7 +56,7 @@ ike_service() {
 
 # ---------- sites file parsing ----------
 reset_site() { S_NAME=""; S_HOST=""; S_PSK=""; S_USER=""; S_PASS=""; S_MPPE="no"; S_ROUTES=""; S_NAT="no"
-  S_REC_EVERY=""; S_REC_AT=""; S_REC_WIN=""; S_QUOTA=""; S_QPERIOD="day"; S_QDIR="total"; S_QWARN="80"; S_IPSEC_MODE="heal"; S_LCP="on"; S_MTU=""; S_MTU_MIN=""; S_MTU_MAX=""; S_MTU_MARGIN=""; S_MTU_STEP=""
+  S_REC_EVERY=""; S_REC_AT=""; S_REC_WIN=""; S_QUOTA=""; S_QPERIOD="day"; S_QDIR="total"; S_QWARN="80"; S_IPSEC_MODE="heal"; S_LCP="on"; S_MTU=""; S_MTU_MIN=""; S_MTU_MAX=""; S_MTU_MARGIN=""; S_MTU_STEP=""; S_TEST_ADDR=""; S_PING_COUNT=""; S_TEST_EVERY=""; S_RTT_BASE=""; S_JIT_BASE=""
   S_POOR_LOSS=""; S_POOR_RTT=""; S_POOR_JITTER=""; S_POOR_ALERT_MIN=""; S_POOR_RECONNECT_MIN=""; S_POOR_COOLDOWN_MIN=""; S_POOR_MAX_DAY=""; S_POOR_WINDOW=""; S_POOR_OUTSIDE=""
   S_MODE="client"; S_IP=""; S_DISABLED="no"; S_ACC_INET="yes"; S_ACC_CLIENTS="yes"; S_ACC_SITES="yes"; }
 
@@ -96,7 +98,12 @@ for_each_site() {   # calls function "$1" once per [site] block, vars in S_*
           mtu_min)          S_MTU_MIN=$val ;;
           mtu_max)          S_MTU_MAX=$val ;;
           mtu_margin)       S_MTU_MARGIN=$val ;;      # (old key, no longer used)
-          mtu_step)         S_MTU_STEP=$val ;;
+          mtu_step)         S_MTU_STEP=$val ;;      # (old key, no longer used)
+          test_addr)        S_TEST_ADDR=$val ;;
+          ping_count)       S_PING_COUNT=$val ;;
+          test_every)       S_TEST_EVERY=$val ;;
+          rtt_base)         S_RTT_BASE=$val ;;
+          jit_base)         S_JIT_BASE=$val ;;
           poor_loss)          S_POOR_LOSS=$val ;;
           poor_rtt)           S_POOR_RTT=$val ;;
           poor_jitter)        S_POOR_JITTER=$val ;;
@@ -162,19 +169,19 @@ parse_routes() {
 #       allow           the tunnel may stay without IPsec: no alert, no repair (for peers that cannot do IPsec)
 #       require         alert after 30 s and keep repairing every 2 min, never leave it plain; plain UDP 1701 from this
 #                       router is also dropped by the firewall (chain L2TPGW-REQ)
-#   mtu = 1300          a FIXED packet size inside this tunnel, 576-1500. Nothing ever changes it by itself; the server only checks every
-#                       5 minutes that it really passes and warns when it does not. Empty = the default of Settings (outgoing sites:
-#                       mtu_default_out, dial-in clients: mtu_default_in, both in quality.conf).
-#                       Outgoing sites: given to pppd (needs a reconnect); dial-in clients: set on the live link.
-#   mtu = auto          the size is found by testing, inside mtu_min .. mtu_max (defaults 1250 .. 1400, in quality.conf):
-#                       1) the link starts at the highest allowed size; 2) about 1 minute after it is up, a packet of exactly that size
-#                       is sent to the far end of the tunnel; 3) if it does not come back, the size goes down 20 by 20 until one passes;
-#                       4) every mtu_auto_min minutes (default 30) the same test runs again, and when it passes, 20 more is tried;
-#                       a change is made by disconnecting and reconnecting (the far router learns the size only when the tunnel comes
-#                       up). At most mtu_auto_max_day changes a day (default 6). Run now: l2tp-gw mtu-auto NAME
-#                       Dial-in clients: the far router sees one shared size (see KNOWN-ISSUES), our own side follows the test and
-#                       needs no reconnect.
-#                       Test by hand with:  l2tp-gw mtu-test NAME
+#   mtu = 1300          the packet size of this tunnel, 576-1500: ONE fixed number, given to pppd as "mtu" and "mru" (the MRU is what we tell the
+#                       far router: "do not send me more than this"; the router's own MRU limits what WE send). Nothing ever changes it while
+#                       the tunnel is up: a change is made by disconnecting and connecting again (saving a connection does that).
+#                       Empty = the default of Settings (outgoing sites: mtu_default_out). Dial-in clients have no number of their own:
+#                       they all get the one number of Settings (mtu_default_in), the same for everybody.
+#   mtu_min = 1250      the lowest size the tests go down to (below it only a warning label appears, nothing is cut). Empty = Settings.
+#   test_addr = A.B.C.D  (optional) a second address that is tested besides the far end of the tunnel. It gets its own host route
+#                       (metric 1) through this tunnel, so it always goes the way of this tunnel. Must be different for every connection.
+#   ping_count = 10     pings per test (empty = Settings: ping_count_out / ping_count_in)
+#   test_every = 1      minutes between two tests (empty = Settings: test_every_out / test_every_in)
+#   rtt_base = 50       delay (ms) that counts as good; 2x orange, 4x red, 6x brown, more black (empty = Settings)
+#   jit_base = 20       the same for the delay swing (jitter)
+#                       Test by hand with:  l2tp-gw mtu-test NAME    or    l2tp-gw mtu-test ADDRESS INTERFACE
 #   lcp_echo = on|off   (outgoing sites, default on) the server sends a PPP "are you alive" every 30 s and ends the
 #                       tunnel after 6 missed answers (3 min), so a tunnel that died silently is redialled
 validate_automation() {
@@ -196,10 +203,11 @@ validate_automation() {
   [[ "$S_QWARN" =~ ^[0-9]{1,2}$ ]] && [ "$((10#$S_QWARN))" -ge 1 ] || die "$w quota_warn must be a percent from 1 to 99"
   case "$S_IPSEC_MODE" in ''|heal|allow|require) ;; *) die "$w ipsec_mode must be heal, allow or require" ;; esac
   case "$S_LCP" in ''|on|off) ;; *) die "$w lcp_echo must be on or off" ;; esac
-  if [ -n "$S_MTU" ] && [ "$S_MTU" != auto ]; then
-    [[ "$S_MTU" =~ ^[0-9]{3,4}$ ]] && [ "$((10#$S_MTU))" -ge 576 ] && [ "$((10#$S_MTU))" -le 1500 ] || die "$w mtu must be auto or a number from 576 to 1500 (empty = the default of Settings)"
+  if [ -n "$S_MTU" ] && [ "$S_MTU" != auto ]; then      # ("auto" of older versions is still read: it means the default of Settings)
+    [[ "$S_MTU" =~ ^[0-9]{3,4}$ ]] && [ "$((10#$S_MTU))" -ge 576 ] && [ "$((10#$S_MTU))" -le 1500 ] || die "$w mtu must be a number from 576 to 1500 (empty = the default of Settings)"
   fi
-  validate_mtu_range "$w" "$S_MTU_MIN" "$S_MTU_MAX" "$S_MTU_STEP"
+  validate_mtu_range "$w" "$S_MTU_MIN" "" ""
+  validate_test_settings "$w" "$S_PING_COUNT" "$S_TEST_EVERY" "$S_RTT_BASE" "$S_JIT_BASE" "$S_TEST_ADDR"
   validate_quality_settings "$w" "$S_POOR_LOSS" "$S_POOR_RTT" "$S_POOR_JITTER" "$S_POOR_ALERT_MIN" "$S_POOR_RECONNECT_MIN" "$S_POOR_COOLDOWN_MIN" "$S_POOR_MAX_DAY" "$S_POOR_WINDOW" "$S_POOR_OUTSIDE"
 }
 
@@ -315,9 +323,27 @@ validate_mtu_range() {
   [ -z "$mn" ] || { [[ "$mn" =~ ^[0-9]{3,4}$ ]] && [ "$((10#$mn))" -ge 576 ] && [ "$((10#$mn))" -le 1500 ] || die "$w mtu_min must be a number from 576 to 1500"; }
   [ -z "$mx" ] || { [[ "$mx" =~ ^[0-9]{3,4}$ ]] && [ "$((10#$mx))" -ge 576 ] && [ "$((10#$mx))" -le 1500 ] || die "$w mtu_max must be a number from 576 to 1500"; }
   [ -z "$mg" ] || { [[ "$mg" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$mg))" -ge 5 ] && [ "$((10#$mg))" -le 200 ] || die "$w mtu_step must be a number from 5 to 200 (bytes)"; }
-  if [ -n "$mn" ] && [ -n "$mx" ] && [ "$((10#$mn))" -gt "$((10#$mx))" ]; then die "$w mtu_min must not be bigger than mtu_max"; fi
+  if [ -n "$mn" ] && [ -n "$mx" ] && [ "$((10#$mn))" -gt "$((10#$mx))" ]; then die "$w mtu_min must not be bigger than mtu_max"; fi      # (mtu_max is an old key: only checked when still present)
   return 0
 }
+
+# the numbers of the tests (one connection, or the defaults of Settings; empty = not set). ADDR: the extra test address
+validate_test_settings() {
+  local w=$1 cnt=$2 ev=$3 rb=$4 jb=$5 addr=${6:-}
+  [ -z "$cnt" ] || { [[ "$cnt" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$cnt))" -ge 3 ] && [ "$((10#$cnt))" -le 30 ] || die "$w ping_count must be a number from 3 to 30 (more would not fit in the minute)"; }
+  [ -z "$ev" ] || { [[ "$ev" =~ ^[0-9]{1,4}$ ]] && [ "$((10#$ev))" -ge 1 ] && [ "$((10#$ev))" -le 1440 ] || die "$w test_every must be minutes from 1 to 1440"; }
+  [ -z "$rb" ] || { [[ "$rb" =~ ^[0-9]{1,4}$ ]] && [ "$((10#$rb))" -ge 1 ] && [ "$((10#$rb))" -le 5000 ] || die "$w rtt_base must be a delay in ms from 1 to 5000"; }
+  [ -z "$jb" ] || { [[ "$jb" =~ ^[0-9]{1,4}$ ]] && [ "$((10#$jb))" -ge 1 ] && [ "$((10#$jb))" -le 5000 ] || die "$w jit_base must be a delay swing in ms from 1 to 5000"; }
+  if [ -n "$addr" ]; then
+    valid_ipv4 "$addr" || die "$w test_addr '$addr' is not an IPv4 address"
+    case "$addr" in 0.*|127.*|255.*|22[4-9].*|23[0-9].*) die "$w test_addr '$addr' cannot be tested (not a normal host address)" ;; esac
+    if [ "${DI_PASS_CHECK:-1}" = 1 ]; then
+      [ -z "${TA_USED[$addr]+x}" ] || die "$w test_addr $addr is already the test address of connection ${TA_USED[$addr]}: every connection needs its own (a second route to the same address would be unclear)"
+      TA_USED[$addr]=$S_NAME
+    fi
+  fi
+}
+declare -gA TA_USED=()      # test address -> connection, to refuse duplicates (reset with DI_USER before every pass)
 
 validate_site() {
   [[ "$S_NAME" =~ $NAME_RE ]] || die "Bad site name '$S_NAME' (use a-z 0-9 -, max 11 chars)"
@@ -803,7 +829,7 @@ cmd_dialin_sync() {
   umask 077
   TMP_CHAP=$(mktemp); KEEP=$(mktemp); TMP_NAT=$(mktemp); TMP_NATD=$(mktemp); TMP_ALLOWED=$(mktemp); TMP_PLAIN=$(mktemp); TMP_REQ=$(mktemp)
   mkdir -p "$CONF_DIR/routes.d" "$CONF_DIR/dialin-ip.d"
-  DI_USER=(); DI_IP=()
+  DI_USER=(); DI_IP=(); TA_USED=()
   if dialin_enabled; then validate_dialin_settings; fi
   LIGHT=1; for_each_site gen_site; LIGHT=0
   local f n
@@ -841,6 +867,33 @@ cmd_disconnect() {
   [ -n "$ifc" ] || { echo "$n is not connected."; return 0; }
   kick_iface "$ifc" || die "Could not find the pppd of $ifc"
   echo "Session of $n ($ifc) ended."
+}
+
+# cut NAME: the connection is cut ONCE so that new settings are really used: a dial-in client is disconnected (its router dials in
+# again by itself), an outgoing site is disconnected and connected again. Used when a connection is saved.
+cmd_cut() {
+  need_root
+  local n=${1:-} mode
+  [ -n "$n" ] && [ -f "$SITES" ] && grep -qxF "[$n]" "$SITES" || die "Usage: l2tp-gw cut NAME (NAME must be an existing connection)"
+  mode=$(awk -v s="[$n]" '$0==s {f=1; next} /^\[/ {f=0} f && /^[ \t]*mode[ \t]*=/ {sub(/^[^=]*=[ \t]*/, ""); print; exit}' "$SITES")
+  if [ "$mode" = server ]; then
+    [ -f "$CONF_DIR/dialin-ip.d/$n" ] || { echo "$n: not known to the dial-in service yet, nothing to cut."; return 0; }
+    cmd_disconnect "$n"
+  else cmd_reconnect "$n"; fi
+}
+# cut-all in|out: the same for ALL enabled dial-in clients (in) or ALL enabled outgoing sites (out), one after the other.
+# Used when the defaults of that part of the Settings are saved.
+cut_cb() {
+  [ "$S_DISABLED" != yes ] || return 0
+  if [ "$CUT_KIND" = in ] && [ "$S_MODE" = server ]; then ( cmd_disconnect "$S_NAME" ) < /dev/null || true
+  elif [ "$CUT_KIND" = out ] && [ "$S_MODE" != server ]; then ( cmd_reconnect "$S_NAME" ) < /dev/null || true; fi
+}
+cmd_cut_all() {
+  need_root
+  CUT_KIND=${1:-}
+  case "$CUT_KIND" in in|out) ;; *) die "Usage: l2tp-gw cut-all in|out" ;; esac
+  [ -f "$SITES" ] || return 0
+  for_each_site cut_cb
 }
 
 # xl2tpd-control with an optional control file (tests use their own xl2tpd)
@@ -903,7 +956,7 @@ cmd_apply() {
   TMP_ACTIVE=$(mktemp); TMP_PREV=$(mktemp)
   mkdir -p "$IPSEC_D" "$PPP_DIR" "$(dirname "$XL2TPD_CONF")" "$CONF_DIR/routes.d" "$CONF_DIR/dialin-ip.d"
   echo "; managed by l2tp-gw" > "$TMP_XL"
-  DI_USER=(); DI_IP=()
+  DI_USER=(); DI_IP=(); TA_USED=()
   # what is configured right now (name + address of every client site), read before anything is regenerated
   local pf pn
   for pf in "$IPSEC_D"/*.conf; do
@@ -1214,23 +1267,26 @@ ipsec_sa_re() {
   printf '^[[:space:]]*%s((\\[[0-9]+\\]: ESTABLISHED)|(\\{[0-9]+\\}:[[:space:]]+INSTALLED))' "$1"
 }
 
-# chk_mtu_road NAME IFC: what the automatic MTU routine learned about the road of this tunnel (file mtu-road/NAME), as health lines
+# chk_mtu_road NAME IFC: the packet-size tests of this tunnel (files mtu-test/NAME.far / NAME.ded, written by the watcher) as health lines.
+# Only things that are true are said: the size passes, or it does not and what the tests found. Nothing here is changed by itself.
 chk_mtu_road() {
-  local n=$1 ifc=$2 f="$STATE_DIR/mtu-road/$1" ts outer inner sug fr mru cur live age
+  local n=$1 ifc=$2 live fl st sug key lab fe t
   live=$(cat "${SYS_NET:-/sys/class/net}/$ifc/mtu" 2>/dev/null || echo 0)
-  if ! [ -f "$f" ]; then
-    if mtu_is_auto; then mtu_cfg; chk OK "$n: automatic MTU on (range $MA_MIN-$MA_MAX): the first measurement comes within a few minutes after the link is up"; fi
-    return 0
-  fi
-  read -r ts outer inner sug fr mru cur < "$f" || return 0
-  age=$(( ($(date +%s) - ts) / 60 ))
-  if mtu_is_auto; then mtu_cfg; if [ "${sug:-0}" -gt 0 ]; then chk OK "$n: automatic MTU $live (range $MA_MIN-$MA_MAX): a packet of $sug passes, tested $age min ago"; else chk WARN "$n: automatic MTU $live (range $MA_MIN-$MA_MAX): no size passed at the last test ($age min ago)"; fi; fi
-  if [ "${outer:-0}" -gt 0 ] && [ "$((live + 101))" -gt "$outer" ]; then
-    chk WARN "$n: MTU $live + about 101 bytes of wrapping = $((live + 101)) is more than the outside road ($outer): packets are split outside (slow, may be lost). Lower the MTU or use auto"
-  fi
-  if [ "$fr" = lost ]; then chk WARN "$n: a packet bigger than the MTU (allowed to be split) gets no answer: big UDP packets (DNS answers, video) fail on this road"
-  elif [ "$fr" = ok ]; then chk OK "$n: UDP: packets up to $((live - 28)) bytes pass whole; bigger ones are split and still arrive"; fi
-  if [ "${mru:-0}" -ge 576 ] && [ "$mru" -lt "$live" ]; then chk WARN "$n: the router allows only $mru bytes (its MRU), lower than the MTU $live"; fi
+  tst_cfg
+  fl=$T_FLOOR
+  if [ "$live" -gt 0 ] && [ "$live" -lt "$fl" ]; then chk WARN "$n: the size of this link is $live, below the lowest size $fl (the far router asked for less): nothing is cut, check its MRU"; fi
+  for key in far ded; do
+    f="$STATE_DIR/mtu-test/$n.$key"; [ -f "$f" ] || continue
+    case "$key" in far) lab="far end of the tunnel" ;; *) lab="test address $S_TEST_ADDR" ;; esac
+    st=$(mt_get "$f" state); sug=$(mt_get "$f" suggest); t=$(mt_get "$f" t)
+    case "$st" in
+      ok)       chk OK "$n: the packet size $live passes ($lab)" ;;
+      found)    chk WARN "$n: a packet of $live does not pass ($lab); the biggest size found that passes is $sug (a suggestion: change the MTU of this connection and save)" ;;
+      stepping) chk WARN "$n: a packet of $live does not pass ($lab); going down to find the size that passes ($(mt_get "$f" next) is the next one tried)" ;;
+      floor)    chk WARN "$n: even the lowest size $fl does not pass ($lab)" ;;
+      *) : ;;
+    esac
+  done
 }
 
 # one dial-in site: connected or not (not connected is only a warning: routers behind NAT come and go)
@@ -1396,64 +1452,34 @@ qconf_val() {
   v=$(awk -F= -v k="$1" '{ key=$1; gsub(/^[ \t]+|[ \t]+$/, "", key); if (key==k) { sub(/^[^=]*=/, ""); gsub(/^[ \t]+|[ \t]+$/, ""); print; exit } }' "$CONF_DIR/quality.conf" 2>/dev/null || true)
   printf '%s' "${v:-$2}"
 }
-# mtu_value: the "mtu" of the site being handled. Its own value; when it wrote none, the default of Settings for its kind
-# (outgoing sites: mtu_default_out, dial-in clients: mtu_default_in). Result: a number or "auto". 1280 only when Settings has nothing at all.
+# ---- the packet size of a tunnel: ONE fixed number, never changed while the tunnel is up ----
+# dir_name: "in" = dial-in client, "out" = outgoing site (the site being handled)
+dir_name() { if [ "$S_MODE" = server ]; then echo in; else echo out; fi; }
+# dir_val KEY DEFAULT: the value of KEY for the site being handled: its own (S_KEY), else the Settings default of its direction
+# (quality.conf: KEY_in / KEY_out), else the older plain Settings key, else DEFAULT (used only when Settings has nothing).
+dir_val() {
+  local var="S_${1^^}" v d
+  v=${!var:-}
+  if [ -z "$v" ]; then d=$(dir_name); v=$(qconf_val "${1}_$d" ""); fi
+  if [ -z "$v" ]; then v=$(qconf_val "$1" ""); fi
+  printf '%s' "${v:-$2}"
+}
+# mtu_value: the packet size of the site being handled. Outgoing: its own "mtu", else mtu_default_out of Settings.
+# Dial-in clients have no number of their own (they share one pppd file): mtu_default_in of Settings. 1280 only when Settings has nothing.
 mtu_value() {
-  local v=${S_MTU:-}
-  if [ -z "$v" ]; then
-    if [ "$S_MODE" = server ]; then v=$(qconf_val mtu_default_in 1280); else v=$(qconf_val mtu_default_out 1280); fi
-  fi
+  local v=""
+  [ "$S_MODE" = server ] || v=${S_MTU:-}
+  case "$v" in ''|auto) v=$(qconf_val "mtu_default_$(dir_name)" 1280) ;; esac
   case "$v" in
-    auto) ;;
     ''|*[!0-9]*) v=1280 ;;
     *) v=$((10#$v)); if [ "$v" -lt 576 ] || [ "$v" -gt 1500 ]; then v=1280; fi ;;
   esac
   printf '%s' "$v"
 }
-# mtu_cfg: MA_MIN / MA_MAX / MA_STEP of the site being handled (site value, else quality.conf, else 1250 / 1400 / 20)
-mtu_cfg() {
-  MA_MIN=$(pq_val mtu_min 1250); MA_MAX=$(pq_val mtu_max 1400); MA_STEP=$(pq_val mtu_step 20)
-  case "$MA_MIN" in ''|*[!0-9]*) MA_MIN=1250 ;; esac; case "$MA_MAX" in ''|*[!0-9]*) MA_MAX=1400 ;; esac; case "$MA_STEP" in ''|*[!0-9]*) MA_STEP=20 ;; esac
-  MA_MIN=$((10#$MA_MIN)); MA_MAX=$((10#$MA_MAX)); MA_STEP=$((10#$MA_STEP))
-  [ "$MA_STEP" -ge 5 ] || MA_STEP=20
-  [ "$MA_MIN" -le "$MA_MAX" ] || MA_MIN=$MA_MAX
-}
-mtu_is_auto() { [ "$(mtu_value)" = auto ]; }
-mtu_learned() { cat "$STATE_DIR/mtu-auto/$1.set" 2>/dev/null | head -n1 || true; }
-mtu_mru() { local v; v=$(cat "$STATE_DIR/mtu-auto/$1.mru" 2>/dev/null | head -n1 || true); case "$v" in ''|*[!0-9]*) v=0 ;; esac; echo "$v"; }
-# mtu_auto_start: where an automatic link starts: the size found last time (kept inside the range), nothing found yet: the highest allowed size
-mtu_auto_start() {
-  local v; mtu_cfg; v=$(mtu_learned "$S_NAME"); case "$v" in ''|*[!0-9]*) v=$MA_MAX ;; esac
-  [ "$v" -ge "$MA_MIN" ] || v=$MA_MIN; [ "$v" -le "$MA_MAX" ] || v=$MA_MAX
-  echo "$v"
-}
-# mtu_offer: the size given to pppd of an outgoing site (what we offer and accept)
-mtu_offer() { if mtu_is_auto; then mtu_auto_start; else mtu_value; fi; }
-# mtu_set_value: the MTU this site should have on the live link right now (auto: the size found, never above the router's MRU)
-mtu_set_value() {
-  local v m
-  if ! mtu_is_auto; then mtu_value; return 0; fi
-  v=$(mtu_auto_start); m=$(mtu_mru "$S_NAME"); if [ "$m" -ge 576 ] && [ "$m" -lt "$v" ]; then v=$m; fi
-  echo "$v"
-}
-# dialin_announce: ONE size for all dial-in clients. They share one pppd options file and pppd must offer its size before it knows who
-# is calling, so the router sees the same number whichever client it is: the biggest size any client may use (a fixed number, or the top
-# of the range of an automatic client). Without any dial-in client: the Settings default.
-DA_MAX=0
-dialin_ann_cb() {
-  [ "$S_MODE" = server ] && [ "$S_DISABLED" != yes ] || return 0
-  local v; v=$(mtu_value)
-  if [ "$v" = auto ]; then mtu_cfg; v=$MA_MAX; fi
-  [ "$v" -le "$DA_MAX" ] || DA_MAX=$v
-}
-dialin_announce() {
-  DA_MAX=0; for_each_site dialin_ann_cb
-  if [ "$DA_MAX" -lt 576 ]; then
-    reset_site; S_MODE=server; DA_MAX=$(mtu_value)
-    if [ "$DA_MAX" = auto ]; then mtu_cfg; DA_MAX=$MA_MAX; fi
-  fi
-  echo "$DA_MAX"
-}
+# mtu_offer: the size given to pppd of an outgoing site: what we say we receive (mru) and the most we send (mtu)
+mtu_offer() { mtu_value; }
+# dialin_announce: ONE size for all dial-in clients (they share one pppd options file, and pppd offers its MRU before it knows who calls)
+dialin_announce() { ( S_MODE=server; S_MTU=""; mtu_value ); }
 # dialin_mtu_rewrite: only the two size lines of the shared pppd file (it is read when a new session starts: no restart needed)
 dialin_mtu_rewrite() {
   local f="$PPP_DIR/options.l2tpd.dialin" a
@@ -1475,14 +1501,14 @@ mtu_log() {      # NAME KIND LABEL TEXT (kind: info|warn|bad)
   printf '{"t": %s, "k": "%s", "m": "%s"}\n' "$now" "$2" "$1: $3 - $4" >> "$STATE_DIR/events.log" 2>/dev/null || true
   [ "$(conf_get quality_alert)" = no ] || notify_send "$1: $3 - $4" || true
 }
-mtu_auto_log() { mtu_log "$1" "$2" "automatic MTU" "$3"; }      # NAME KIND TEXT
-# mtu_auto_note NAME KEY: a problem of kind KEY is present. Returns 1 the FIRST time (so it is told once, not every run), 0 while it stays.
-# mtu_auto_clear NAME KEY: the problem is gone (it will be told again if it comes back).
-mtu_auto_note() { mkdir -p "$STATE_DIR/mtu-auto"; local f="$STATE_DIR/mtu-auto/$1.alert-$2"; [ ! -f "$f" ] || return 0; : > "$f"; return 1; }
-mtu_auto_clear() { rm -f "$STATE_DIR/mtu-auto/$1.alert-$2"; }
+# mtu_note NAME KEY: a problem of kind KEY is present. Returns 1 the FIRST time (so it is told once, not every run), 0 while it stays.
+# mtu_clear NAME KEY: the problem is gone (it will be told again if it comes back).
+mtu_note() { mkdir -p "$STATE_DIR/mtu-note"; local f="$STATE_DIR/mtu-note/$1.$2"; [ ! -f "$f" ] || return 0; : > "$f"; return 1; }
+mtu_clear() { rm -f "$STATE_DIR/mtu-note/$1.$2"; }
 mtu_live() { cat "${SYS_NET:-/sys/class/net}/$1/mtu" 2>/dev/null || true; }
-# mtu_pass DEV ADDR SIZE: does a packet of exactly this link size (not allowed to be split) go through the tunnel and come back?
-mtu_pass() { ping -c 2 -i 0.3 -W 2 -n -q -M do -s "$(( $3 - 28 ))" -I "$1" "$2" >/dev/null 2>&1; }
+# mtu_pass DEV ADDR SIZE: do packets of exactly this link size (MTU_COUNT of them, not allowed to be split) go through the tunnel and come back?
+# Yes when 71 percent or more come back (the orange / green colours of the tests).
+mtu_pass() { local c=${MTU_COUNT:-5} r rx; r=$(bigping "$1" "$2" "$3" "$c"); rx=${r% *}; [ $(( rx * 100 / c )) -ge 71 ]; }
 # mtu_find_max FUNCTION: the biggest payload (56..1472) for which FUNCTION SIZE succeeds
 mtu_find_max() {
   local fn=$1 l=56 h=1472 m
@@ -1501,192 +1527,91 @@ mtu_outer_road() {
   o=$(( $(mtu_find_max mtu_oprobe) + 28 )); [ "$o" -le 1500 ] || o=1500
   echo "$o"
 }
-# mtu_auto_cb: one site. Timing: a new link is tested about a minute after it came up ("first"), then every mtu_auto_min minutes ("again").
-mtu_auto_cb() {
-  [ "$S_DISABLED" != yes ] || return 0
-  mtu_is_auto || return 0
-  [ -z "${MA_ONLY:-}" ] || [ "$S_NAME" = "$MA_ONLY" ] || return 0
-  local dev addr name=$S_NAME every now idx oldidx born last kind
-  if [ "$S_MODE" = server ]; then dev=$(ifc_by_peer "$S_IP"); addr=$S_IP
-  else dev="ppp-$S_NAME"; addr=$(ip -o -4 addr show dev "$dev" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="peer"){sub("/.*","",$(i+1)); print $(i+1); exit}}' || true); fi
-  [ -n "$dev" ] && [ -n "$addr" ] && iface_up "$dev" || return 0
-  mkdir -p "$STATE_DIR/mtu-auto" "$STATE_DIR/mtu-road"
-  every=$(pq_val mtu_auto_min 30); case "$every" in ''|*[!0-9]*) every=30 ;; esac; [ "$every" -ge 5 ] || every=5
-  now=$(date +%s)
-  idx=$(cat "${SYS_NET:-/sys/class/net}/$dev/ifindex" 2>/dev/null || echo 0)
-  oldidx=$(cat "$STATE_DIR/mtu-auto/$name.idx" 2>/dev/null || true)
-  if [ "$idx" != "$oldidx" ]; then      # a new link (different interface number): note what the router offered, test after the tunnel settled
-    echo "$idx" > "$STATE_DIR/mtu-auto/$name.idx"; echo "$now" > "$STATE_DIR/mtu-auto/$name.born"; rm -f "$STATE_DIR/mtu-auto/$name.last"
-    mtu_note_mru "$name" "$dev"
-    [ -n "${MA_FORCE:-}" ] || return 0
-  fi
-  born=$(cat "$STATE_DIR/mtu-auto/$name.born" 2>/dev/null || echo "$now"); last=$(cat "$STATE_DIR/mtu-auto/$name.last" 2>/dev/null || true)
-  if [ -n "${MA_FORCE:-}" ]; then kind=again; [ -n "$last" ] || kind=first
-  else
-    [ "$((now - born))" -ge "${MA_WAIT:-60}" ] || return 0
-    if [ -z "$last" ]; then kind=first
-    elif [ "$((now - last))" -ge "$((every * 60))" ]; then kind=again
-    else return 0; fi
-  fi
-  echo "$now" > "$STATE_DIR/mtu-auto/$name.last"
-  MTU_NAME=$name; MTU_BYDEV=""; MTU_FOUND=""; mtu_find_cb        # far address, address of the router outside, router limit of this site
-  if [ -n "${MA_PAR:-}" ]; then
-    while [ "$(jobs -rp | wc -l)" -ge "$MA_PAR" ]; do wait -n 2>/dev/null || break; done
-    ( mtu_auto_run "$name" "$dev" "$addr" "$kind" ) &
-  else
-    mtu_auto_run "$name" "$dev" "$addr" "$kind"
-  fi
+
+# ---- the tests of a connection (every test_every minutes, from the watcher) ----
+# tst_cfg: T_COUNT (pings per test), T_EVERY (minutes between tests), T_FLOOR (lowest size), T_STEP / T_WAIT (how the size goes down)
+# of the site being handled: its own value, else the Settings default of its direction, else a built-in value.
+tst_num() { case "$1" in ''|*[!0-9]*) echo "$2" ;; *) echo $((10#$1)) ;; esac; }
+tst_cfg() {
+  local d; d=$(dir_name)
+  T_COUNT=$(tst_num "$(dir_val ping_count 10)" 10); [ "$T_COUNT" -ge 3 ] || T_COUNT=10
+  T_EVERY=$(tst_num "$(dir_val test_every 1)" 1); [ "$T_EVERY" -ge 1 ] || T_EVERY=1
+  T_FLOOR=$(tst_num "$(dir_val mtu_min 1250)" 1250)
+  T_STEP=$(tst_num "$(qconf_val "mtu_step_$d" 5)" 5); [ "$T_STEP" -ge 1 ] || T_STEP=5
+  T_WAIT=$(tst_num "$(qconf_val "mtu_step_wait_$d" 1)" 1); [ "$T_WAIT" -ge 1 ] || T_WAIT=1
 }
-# mtu_note_mru NAME DEV: when the live size is not the one WE set last, pppd has just negotiated it: if it is below what we offered, that is the router's MRU
-mtu_note_mru() {
-  local name=$1 dev=$2 cur offered lastset
-  mkdir -p "$STATE_DIR/mtu-auto"
-  cur=$(mtu_live "$dev"); case "$cur" in ''|*[!0-9]*) return 0 ;; esac
-  lastset=$(cat "$STATE_DIR/mtu-auto/$name.applied" 2>/dev/null || true)
-  [ "$cur" != "$lastset" ] || return 0
-  if [ "$S_MODE" = server ]; then offered=$(dialin_announce); else offered=$(mtu_offer); fi
-  if [ "$cur" -lt "$offered" ]; then echo "$cur" > "$STATE_DIR/mtu-auto/$name.mru"; else echo 0 > "$STATE_DIR/mtu-auto/$name.mru"; fi
+# mt_get FILE KEY / mt_put FILE "k=v k=v": the one-line state files (mtu-test/NAME.far, NAME.ded)
+mt_get() { { tr ' ' '\n' < "$1" | sed -n "s/^$2=//p" | head -n1; } 2>/dev/null || true; }
+mt_put() { mkdir -p "$(dirname "$1")"; printf '%s\n' "$2" > "$1.tmp" && mv "$1.tmp" "$1"; chmod 644 "$1" 2>/dev/null || true; }
+# bigping DEV ADDR SIZE COUNT -> "RECEIVED TOOBIG": COUNT packets of exactly SIZE bytes (not allowed to be split).
+# TOOBIG is 1 when a "packet too big / needs to be split" message came back.
+bigping() {
+  local out rx tb=0
+  out=$(ping -c "$4" -i 0.2 -W 1 -n -M do -s "$(( $3 - 28 ))" -I "$1" "$2" 2>&1) || true
+  rx=$(printf '%s\n' "$out" | sed -n 's/.* \([0-9]*\) received.*/\1/p' | head -n1); rx=${rx:-0}
+  if printf '%s\n' "$out" | grep -qiE 'frag(mentation)? needed|message too long|too big|too large|needs to be fragmented'; then tb=1; fi
+  echo "$rx $tb"
 }
-# mtu_auto_change NAME DEV OLD NEW WHY: make NEW the size of this site. Outgoing site: written for pppd and the tunnel is disconnected and
-# connected again (the far router learns the size only when the tunnel comes up). Dial-in client: the live link is changed in place.
-# Returns 1 (nothing done) when the limit of changes per 24 hours is reached.
-mtu_auto_change() {
-  local name=$1 dev=$2 old=$3 new=$4 why=$5 maxd nchg now chg="$STATE_DIR/mtu-auto/$1.chg"
-  now=$(date +%s)
-  maxd=$(pq_val mtu_auto_max_day 6); case "$maxd" in ''|*[!0-9]*) maxd=6 ;; esac
-  touch "$chg"; awk -v n="$now" '$1 > n - 86400' "$chg" > "$chg.tmp" && mv "$chg.tmp" "$chg"
-  nchg=$(grep -c . "$chg" || true)
-  if [ "$nchg" -ge "$maxd" ]; then
-    if ! mtu_auto_note "$name" cap; then mtu_auto_log "$name" warn "the size should change ($old -> $new: $why) but the limit of $maxd changes in 24 hours is reached: left at $old. The road is probably unstable"; fi
-    return 1
-  fi
-  mtu_auto_clear "$name" cap
-  echo "$now" >> "$chg"
-  echo "$new" > "$STATE_DIR/mtu-auto/$name.set"; echo "$new" > "$STATE_DIR/mtu-auto/$name.applied"
-  if [ "$S_MODE" = server ]; then
-    ip link set dev "$dev" mtu "$new" 2>/dev/null || true
-    mtu_auto_log "$name" info "MTU $old -> $new ($why); a dial-in link is changed in place, no reconnect"
-    QUIET=1 cmd_mss_apply >/dev/null 2>&1 || true
-  else
-    mtu_write_ppp_options "$name" "$new"
-    mtu_auto_log "$name" info "MTU $old -> $new ($why); the tunnel is disconnected and connected again to use it"
-    ( cmd_reconnect "$name" ) >/dev/null 2>&1 || true
-  fi
-  return 0
-}
-# mtu_auto_run NAME DEV ADDR KIND: the test and the decision for one connected site (KIND first|again)
-mtu_auto_run() {
-  local name=$1 dev=$2 addr=$3 kind=$4 cur now s start ok=0 found=0 from to ts cnt up upf pass=0 fr=na outer mru inner trial
-  trial="$STATE_DIR/mtu-auto/$name.trial"
-  mtu_cfg
-  now=$(date +%s)
-  cur=$(mtu_live "$dev"); case "$cur" in ''|*[!0-9]*) return 0 ;; esac
-  # nothing answers, not even a tiny packet: there is nothing to decide, the size is left alone
-  if ! ping -c 2 -i 0.3 -W 2 -n -q -M do -s 56 -I "$dev" "$addr" >/dev/null 2>&1; then
-    cnt=$(( $(cat "$STATE_DIR/mtu-auto/$name.noans" 2>/dev/null || echo 0) + 1 )); echo "$cnt" > "$STATE_DIR/mtu-auto/$name.noans"
-    if [ "$cnt" -ge 3 ] && ! mtu_auto_note "$name" noanswer; then mtu_auto_log "$name" warn "no answer to the size test 3 times in a row (the far end may not answer ping): the MTU is left as it is ($cur)"; fi
-    return 0
-  fi
-  rm -f "$STATE_DIR/mtu-auto/$name.noans"; mtu_auto_clear "$name" noanswer
-  mru=$(mtu_mru "$name")
-  if [ "$mru" -ge 576 ] && [ "$mru" -lt "$MA_MIN" ]; then
-    if ! mtu_auto_note "$name" mru; then mtu_auto_log "$name" warn "the router allows only $mru bytes (its MRU), which is below the lowest value of the range ($MA_MIN). Raise the MRU on the router or lower mtu_min"; fi
-  else mtu_auto_clear "$name" mru; fi
-  # the highest allowed size was lowered in the settings: follow it
-  if [ "$cur" -gt "$MA_MAX" ]; then
-    rm -f "$trial"
-    mtu_auto_change "$name" "$dev" "$cur" "$MA_MAX" "the highest allowed size is now $MA_MAX" || true
-    return 0
-  fi
-  if mtu_pass "$dev" "$addr" "$cur"; then ok=1; fi
-  inner=$cur
-  if [ "$ok" = 1 ]; then
-    mtu_auto_clear "$name" nopass
-    echo "$cur" > "$STATE_DIR/mtu-auto/$name.set"; echo "$cur" > "$STATE_DIR/mtu-auto/$name.applied"
-    if [ -f "$trial" ]; then
-      read -r from to ts < "$trial" || true; rm -f "$trial"
-      mtu_auto_log "$name" info "MTU $cur passes after the reconnect: kept (it was $from before)"
-    fi
-    # every mtu_auto_min minutes: does 20 more pass? Then it is tried (outgoing: by a reconnect). Not again for 6 hours after a failed try.
-    if [ "$kind" = again ] && [ "$cur" -lt "$MA_MAX" ]; then
-      upf=$(cat "$STATE_DIR/mtu-auto/$name.upfail" 2>/dev/null || echo 0); case "$upf" in ''|*[!0-9]*) upf=0 ;; esac
-      if [ "$((now - upf))" -ge 21600 ]; then
-        up=$((cur + MA_STEP)); [ "$up" -le "$MA_MAX" ] || up=$MA_MAX
-        # the link must be allowed to carry the bigger packet for the test; it is put back at once
-        if ip link set dev "$dev" mtu "$up" 2>/dev/null; then
-          if mtu_pass "$dev" "$addr" "$up"; then pass=1; fi
-          ip link set dev "$dev" mtu "$cur" 2>/dev/null || true
-        fi
-        if [ "$pass" = 1 ]; then
-          [ "$S_MODE" = server ] || echo "$cur $up $now" > "$trial"
-          if mtu_auto_change "$name" "$dev" "$cur" "$up" "a packet of $up passes"; then cur=$up; inner=$up; else rm -f "$trial"; fi
-        fi
-      fi
-    fi
-  else
-    # the size does not pass: go down 20 by 20 (never below the range) until one passes. After a failed try upwards go back to the old size first.
-    start=$((cur - MA_STEP))
-    if [ -f "$trial" ]; then read -r from to ts < "$trial" || true; case "$from" in ''|*[!0-9]*) ;; *) [ "$from" -ge "$cur" ] || start=$from ;; esac; fi
-    s=$start
-    while :; do
-      [ "$s" -ge "$MA_MIN" ] || s=$MA_MIN
-      if mtu_pass "$dev" "$addr" "$s"; then found=1; break; fi
-      [ "$s" -gt "$MA_MIN" ] || break
-      s=$((s - MA_STEP))
-    done
-    if [ -f "$trial" ]; then echo "$now" > "$STATE_DIR/mtu-auto/$name.upfail"; rm -f "$trial"; fi
-    if [ "$found" = 1 ]; then
-      mtu_auto_clear "$name" nopass
-      if mtu_auto_change "$name" "$dev" "$cur" "$s" "a packet of $cur does not pass, $s does"; then inner=$s; else inner=0; fi
+# mtu_probe NAME KEY DEV ADDR SMALLPCT DUE: the packet-size part of a test, for one address (KEY far|ded) of one connection.
+# Each regular test starts again from the size the link has NOW. Going down happens ONLY when that size does not pass; then every
+# T_WAIT minute(s) one step of T_STEP down (never below T_FLOOR), until a size passes. Nothing is changed by it: the result is a suggestion.
+# State file mtu-test/NAME.KEY: t live state pct tb suggest next stepat floor
+#   ok        the size of the link passes
+#   stepping  it does not pass (small packets do): "next" is the size tried at "stepat"
+#   found     the biggest size that passes (suggest)
+#   floor     nothing passes down to the lowest size
+#   none      small packets are lost too: nothing can be said about the size
+mtu_probe() {
+  local name=$1 key=$2 dev=$3 addr=$4 spct=$5 due=$6 f="$STATE_DIR/mtu-test/$1.$2" now live st next stepat r rx tb pct size
+  now=$(date +%s); live=$(mtu_live "$dev"); case "$live" in ''|*[!0-9]*) return 0 ;; esac
+  st=$(mt_get "$f" state); next=$(mt_get "$f" next); stepat=$(mt_get "$f" stepat)
+  case "$next" in ''|*[!0-9]*) next=0 ;; esac; case "$stepat" in ''|*[!0-9]*) stepat=0 ;; esac
+  if [ "$st" = stepping ] && [ -z "${Q_FORCE:-}" ]; then      # (the "Test now" button starts again from the size of the tunnel)
+    [ "$now" -ge "$stepat" ] || return 0
+    size=$next
+    r=$(bigping "$dev" "$addr" "$size" "$T_COUNT"); rx=${r% *}; tb=${r#* }
+    pct=$(( (rx * 100 + T_COUNT / 2) / T_COUNT ))
+    if [ "$pct" -ge 71 ]; then
+      mt_put "$f" "t=$now live=$live state=found pct=$pct tb=$tb suggest=$size next=0 stepat=0 floor=$T_FLOOR"
+    elif [ "$size" -le "$T_FLOOR" ]; then
+      mt_put "$f" "t=$now live=$live state=floor pct=$pct tb=$tb suggest=0 next=0 stepat=0 floor=$T_FLOOR"
     else
-      inner=0
-      if ! mtu_auto_note "$name" nopass; then mtu_auto_log "$name" bad "no size from $cur down to $MA_MIN passes, although tiny packets do: the MTU stays $cur. Check the road or the far router"; fi
+      next=$(( size - T_STEP )); [ "$next" -ge "$T_FLOOR" ] || next=$T_FLOOR
+      mt_put "$f" "t=$now live=$live state=stepping pct=$pct tb=$tb suggest=0 next=$next stepat=$(( now + T_WAIT * 60 )) floor=$T_FLOOR"
     fi
+    return 0
   fi
-  # what is known about the road: the road outside (public address of the far router, when it answers ping) and the split-packet test
-  outer=$(mtu_outer_road "${MTU_OUTER:-}")
-  if [ "$ok" = 1 ] && [ "$(mtu_live "$dev")" -ge 576 ]; then
-    cur=$(mtu_live "$dev")
-    if ping -c 2 -i 0.3 -W 2 -n -q -I "$dev" -s $((cur - 28 + 200)) "$addr" >/dev/null 2>&1; then fr=ok; else fr=lost; fi
-    if [ "$fr" = ok ]; then mtu_auto_clear "$name" frag; fi
-    if [ "$fr" = lost ]; then
-      if ! mtu_auto_note "$name" frag; then mtu_auto_log "$name" warn "a packet bigger than the MTU ($((cur + 200)) bytes, allowed to be split) got no answer: split packets are lost on this road. Big UDP packets (DNS answers, video) will fail"; fi
-    fi
+  [ "$due" = 1 ] || return 0
+  if [ "$spct" -lt 71 ]; then
+    mt_put "$f" "t=$now live=$live state=none pct=0 tb=0 suggest=0 next=0 stepat=0 floor=$T_FLOOR"; return 0
   fi
-  printf '%s %s %s %s %s %s %s\n' "$now" "${outer:-0}" "${inner:-0}" "${inner:-0}" "$fr" "$mru" "$(mtu_live "$dev")" > "$STATE_DIR/mtu-road/$name"
-  chmod 644 "$STATE_DIR/mtu-road/$name" 2>/dev/null || true
+  r=$(bigping "$dev" "$addr" "$live" "$T_COUNT"); rx=${r% *}; tb=${r#* }
+  pct=$(( (rx * 100 + T_COUNT / 2) / T_COUNT ))
+  if [ "$tb" = 0 ] && [ "$pct" -ge 71 ]; then
+    mt_put "$f" "t=$now live=$live state=ok pct=$pct tb=$tb suggest=0 next=0 stepat=0 floor=$T_FLOOR"
+  elif [ "$live" -le "$T_FLOOR" ]; then
+    mt_put "$f" "t=$now live=$live state=floor pct=$pct tb=$tb suggest=0 next=0 stepat=0 floor=$T_FLOOR"
+  else
+    next=$(( live - T_STEP )); [ "$next" -ge "$T_FLOOR" ] || next=$T_FLOOR
+    mt_put "$f" "t=$now live=$live state=stepping pct=$pct tb=$tb suggest=0 next=$next stepat=$(( now + T_WAIT * 60 )) floor=$T_FLOOR"
+  fi
 }
-cmd_mtu_auto() {
-  need_root
-  [ -f "$SITES" ] || return 0
-  command -v ping >/dev/null 2>&1 || return 0
-  mkdir -p "$STATE_DIR"
-  exec 7>"$STATE_DIR/.mtu-auto.lock"
-  flock -n 7 || return 0
-  MA_ONLY=${1:-}; MA_FORCE=""; [ -z "$MA_ONLY" ] || MA_FORCE=1
-  MA_PAR=3
-  for_each_site mtu_auto_cb
-  wait
-  MA_ONLY=""; MA_FORCE=""; MA_PAR=""
+# test_route_set DEV ADDR: the test address of a connection always goes through ITS tunnel: a host route with metric 1
+test_route_set() {
+  ip route show "$2/32" dev "$1" 2>/dev/null | grep -q 'metric 1\b' && return 0
+  ip route replace "$2/32" dev "$1" metric 1 2>/dev/null || true
 }
-
-
-# ---- MTU: per-client setting for dial-in links, and a measurement for any tunnel or address ----
-# mtu-apply [IFACE]: set the live MTU of connected dial-in links to the client's "mtu" (default 1280). IFACE = only that link.
-mtu_apply_cb() {
-  [ "$S_DISABLED" != yes ] || return 0
-  local ifc want cur
-  if [ "$S_MODE" = server ]; then ifc=$(ifc_by_peer "$S_IP")
-  else mtu_is_auto || return 0; ifc="ppp-$S_NAME"; iface_up "$ifc" || return 0; fi
+test_route_cb() {
+  [ "$S_DISABLED" != yes ] && [ -n "$S_TEST_ADDR" ] || return 0
+  local ifc
+  if [ "$S_MODE" = server ]; then ifc=$(ifc_by_peer "$S_IP"); else ifc="ppp-$S_NAME"; iface_up "$ifc" || return 0; fi
   [ -n "$ifc" ] || return 0
   if [ -n "${MTU_ONLY:-}" ] && [ "$ifc" != "$MTU_ONLY" ]; then return 0; fi
-  if mtu_is_auto; then mkdir -p "$STATE_DIR/mtu-auto"; mtu_note_mru "$S_NAME" "$ifc"; fi
-  want=$(mtu_set_value)
-  cur=$(ip -o link show dev "$ifc" 2>/dev/null | sed -n 's/.* mtu \([0-9]*\).*/\1/p')
-  if [ "$cur" != "$want" ]; then ip link set dev "$ifc" mtu "$want" 2>/dev/null && echo "$S_NAME: $ifc mtu $cur -> $want"; fi
-  if mtu_is_auto; then echo "$want" > "$STATE_DIR/mtu-auto/$S_NAME.applied"; fi
+  test_route_set "$ifc" "$S_TEST_ADDR"
 }
-cmd_mtu_apply() { MTU_ONLY=${1:-}; for_each_site mtu_apply_cb; MTU_ONLY=""; cmd_mss_apply || true; }
+# mtu-apply [IFACE]: called when a tunnel comes up (ip-up hook) and by dialin-sync. It no longer touches any size (a live tunnel keeps
+# its size): it puts the test-address route in place and refreshes the TCP size rules.
+cmd_mtu_apply() { MTU_ONLY=${1:-}; for_each_site test_route_cb; MTU_ONLY=""; cmd_mss_apply || true; }
 
 # mss-apply: the TCP segment size (MSS) of every tunnel is cut to "link MTU - 40" in BOTH directions (chain L2TPGW-MSS in the mangle table).
 # The older rule (--clamp-mss-to-pmtu) only looks at the interface a packet LEAVES by, so the SYN that goes from the router out to the
@@ -1762,8 +1687,7 @@ mtu_find_cb() {      # finds the tunnel interface and the far address of site MT
   else
     MTU_OUTER=$S_HOST; is_ipv4 "$MTU_OUTER" || MTU_OUTER=$(resolve_v4 "$MTU_OUTER")
   fi
-  MTU_WANT=$(mtu_offer); MTU_AUTO=""; MTU_MRU=0
-  if mtu_is_auto; then MTU_AUTO=1; MTU_MRU=$(mtu_mru "$S_NAME"); fi
+  MTU_WANT=$(mtu_offer)
   MTU_FOUND=1
 }
 
@@ -1799,12 +1723,19 @@ if best:
 # One line per way:  RESULT addr=A dev=D current=N max=M suggested=S inner=I outer=O lowered=L [site=NAME] [prefix=P]
 cmd_mtu_test() {
   need_root
-  local target=${1:-} via=${2:-} addr="" dev="" pfx="" metric="" devs=() d rc=0
+  local target=${1:-} via=${2:-} addr="" dev="" pfx="" metric="" devs=() d rc=0 tmp_route="" tx0=0
   [ -n "$target" ] || die "Usage: l2tp-gw mtu-test SITE_NAME|ADDRESS [INTERFACE]"
+  MTU_COUNT=$(tst_num "$(qconf_val ping_count_out 10)" 10); [ "$MTU_COUNT" -ge 3 ] || MTU_COUNT=5
   command -v ping >/dev/null 2>&1 || die "ping is not installed (apt-get install iputils-ping)"
   if is_ipv4 "$target"; then
     addr=$target
-    if [ -n "$via" ]; then devs=("$via"); echo "Path: you chose the interface $via (the routing table is not asked)."
+    if [ -n "$via" ]; then
+      devs=("$via"); echo "Path: you chose the interface $via: $addr is sent through that tunnel."
+      if ! ip route show "$addr/32" dev "$via" 2>/dev/null | grep -q 'metric 1\b'; then
+        if ip route add "$addr/32" dev "$via" metric 1 2>/dev/null; then tmp_route=1; echo "A temporary route for $addr through $via (metric 1) was added; it is removed after the test."
+        else echo "The temporary route could not be added; the packets are still forced through $via."; fi
+      fi
+      tx0=$(cat "${SYS_NET:-/sys/class/net}/$via/statistics/tx_packets" 2>/dev/null || echo 0)
     else
       local rd rest=""
       rd=$(route_devs "$addr"); read -r pfx metric rest <<< "$rd"
@@ -1815,6 +1746,14 @@ cmd_mtu_test() {
       [ "${#devs[@]}" -lt 2 ] || echo "This is a multipath route: the traffic is shared between these ways, so each one is measured on its own."
     fi
     for d in "${devs[@]}"; do mtu_measure "$addr" "$d" "" "$pfx" || rc=1; done
+    if [ -n "$via" ]; then       # the proof that the packets really went through that tunnel, then the temporary route goes
+      local rg tx1
+      rg=$(ip route get "$addr" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1)
+      tx1=$(cat "${SYS_NET:-/sys/class/net}/$via/statistics/tx_packets" 2>/dev/null || echo 0)
+      if [ "$rg" = "$via" ] && [ "$((tx1 - tx0))" -ge 1 ]; then echo "Proof: the routing table sends $addr through $via, and $((tx1 - tx0)) packets left through it during the test."
+      else echo "NOT PROVEN: the routing table says $addr leaves through '${rg:-?}', and $((tx1 - tx0)) packets were counted on $via. Do not trust this result for that tunnel."; rc=1; fi
+      [ -z "$tmp_route" ] || ip route del "$addr/32" dev "$via" metric 1 2>/dev/null || true
+    fi
     return $rc
   fi
   MTU_NAME=$target; MTU_BYDEV=""; MTU_FOUND=""; MTU_DEV=""; MTU_ADDR=""; MTU_OUTER=""; MTU_WANT=""; MTU_SITE=""
@@ -1831,7 +1770,7 @@ cmd_mtu_test() {
 mtu_check_site() {
   local name=$1 dev=$2 addr=$3 oip=${4:-} cur s step best=0 pass=no outer=""
   cur=$(mtu_live "$dev"); case "$cur" in ''|*[!0-9]*) die "Cannot read the MTU of $dev" ;; esac
-  step=$(qconf_val mtu_step 20); case "$step" in ''|*[!0-9]*) step=20 ;; esac; [ "$step" -ge 5 ] || step=20
+  step=$(tst_num "$(qconf_val mtu_step_out 5)" 5); [ "$step" -ge 1 ] || step=5
   if ! ping -c 2 -i 0.3 -W 2 -n -q -M do -s 56 -I "$dev" "$addr" >/dev/null 2>&1; then
     echo "No answer from $addr through $dev even with a tiny packet (the far end may not answer ping, or the path is down)."
     echo "RESULT addr=$addr dev=$dev current=$cur max=0 suggested=0 inner=0 outer=0 lowered=0 pass=no site=$name"; return 1
@@ -1851,7 +1790,7 @@ mtu_check_site() {
   fi
   if [ -n "$oip" ]; then
     outer=$(mtu_outer_road "$oip")
-    if [ -n "$outer" ]; then echo "The road outside the tunnel, to the router's public address $oip, carries packets up to $outer bytes whole (the tunnel wrapping needs about 101 more than the MTU)."
+    if [ -n "$outer" ]; then echo "The road outside the tunnel, to the router's public address $oip, carries packets up to $outer bytes whole."
     else echo "The router's public address $oip does not answer ping: the road outside the tunnel was not measured (this does not change the test above)."; fi
   else echo "The public address of the far router is not known, so the road outside the tunnel was not measured (this does not change the test above)."; fi
   echo "RESULT addr=$addr dev=$dev current=$cur max=$best suggested=$best inner=$best outer=${outer:-0} lowered=0 pass=$pass site=$name"
@@ -1868,7 +1807,7 @@ mtu_measure() {
   elif [[ "$dev" != ppp* ]]; then echo "$dev is a normal network card: the traffic goes out to the internet directly, no tunnel wrapping."; fi
   [ -z "$site" ] || { want=$MTU_WANT; outer_ip=$MTU_OUTER; }
   cur=$(ip -o link show dev "$dev" 2>/dev/null | sed -n 's/.* mtu \([0-9]*\).*/\1/p')
-  probe() { ping -c 2 -i 0.3 -W 2 -n -q -M do -s "$1" -I "$dev" "$addr" >/dev/null 2>&1; }
+  probe() { mtu_pass "$dev" "$addr" $(( $1 + 28 )); }
   if ! probe 56; then
     echo "No answer from $addr through $dev even with a tiny packet (the far router may not answer ping, or the path is down)."
     echo "RESULT addr=$addr dev=$dev current=${cur:-?} max=0 suggested=0 inner=0 outer=0 lowered=0${site:+ site=$site}"; return 1
@@ -1878,89 +1817,30 @@ mtu_measure() {
   lo=$(find_max probe)
   max=$((lo + 28)); [ "$max" -le 1500 ] || max=1500
   sug=$max
-  # A big packet can pass INSIDE the tunnel and still be a bad choice: the wrapped packet (IPsec + L2TP + PPP, about 101 bytes)
-  # must fit the real road too, otherwise the outside packets are cut into pieces (slow, and some networks drop them).
-  if [ -n "$site" ]; then
-    if [ -n "${outer_ip:-}" ]; then
-      oprobe() { ping -c 2 -i 0.3 -W 2 -n -q -M do -s "$1" "$outer_ip" >/dev/null 2>&1; }
-      if oprobe 56; then outer=$(( $(find_max oprobe) + 28 )); [ "$outer" -le 1500 ] || outer=1500; fi
-    fi
-    if [ -n "$outer" ]; then olim=$((outer - 101))
-    else note=" The road outside the tunnel was not measured (the far router did not answer ping, or its address is not known), so only what passes inside the tunnel is reported."; fi
-    if [ "${MTU_MRU:-0}" -ge 576 ]; then lowered=$MTU_MRU
-    elif [ -z "${MTU_AUTO:-}" ] && [ -n "$want" ] && [ -n "$cur" ] && [ "$cur" -lt "$want" ]; then lowered=$cur; fi
-  fi
-  if [ -n "$olim" ] && [ "$olim" -lt "$sug" ]; then
-    echo "Inside the tunnel packets up to $max bytes pass, but the outside road carries only ${outer:-1500} bytes and the tunnel wrapping needs about 101 bytes."
-    echo "A bigger packet would be cut into pieces on the way (slow or lost). A good MTU is $olim.$note"
-    sug=$olim
-  elif [ "$max" -ge "${cur:-1500}" ]; then echo "Packets up to $max bytes (the MTU of $dev now) pass through $dev.$note"
-  else echo "Through $dev the biggest packet that passes is $max bytes (the link MTU now is ${cur:-?}); a good MTU is $sug.$note"; fi
+  # What is reported is what really passes through the way that was asked for. (A packet that goes through is not judged against
+  # the road outside the tunnel: when it comes back, every limit on the way has been passed.)
+  if [ -n "$site" ] && [ -n "$want" ] && [ -n "$cur" ] && [ "$cur" -lt "$want" ]; then lowered=$cur; fi
+  if [ "$max" -ge "${cur:-1500}" ]; then echo "Packets up to $max bytes (the MTU of $dev now) pass through $dev."
+  else echo "Through $dev the biggest packet that passes is $max bytes (the link MTU now is ${cur:-?}); a good MTU is $sug."; fi
   if [ -n "$lowered" ]; then
-    echo "The far router asked for at most $lowered bytes when the tunnel came up (its MRU; you set $want here), so the tunnel really carries only $lowered."
+    echo "The far router asked for at most $lowered bytes when the tunnel came up (you set $want here), so the tunnel really carries only $lowered."
     [ "$sug" -le "$lowered" ] || sug=$lowered
   fi
   echo "RESULT addr=$addr dev=$dev current=${cur:-?} max=$max suggested=$sug inner=$max outer=${outer:-0} lowered=${lowered:-0}${site:+ site=$site}${pfx:+ prefix=$pfx}"
 }
 
-# mtu-verify [NAME]: does the MTU that is SET for each connected tunnel really get through right now?
-# One DF ping of exactly that size through the tunnel (the link is not touched). Result per tunnel in $STATE_DIR/mtu-status:
-#   NAME state want cur time      state = ok | bad (the set size does not pass) | lowered (the router asked for less) | unknown (no answer even to a tiny ping)
-# The watcher runs it every 5 minutes; the panel colours the MTU chip from it.
-mtu_verify_cb() {
-  [ "$S_DISABLED" != yes ] || return 0
-  [ -z "${MTU_ONLY_NAME:-}" ] || [ "$S_NAME" = "$MTU_ONLY_NAME" ] || return 0
-  local dev addr want name=$S_NAME
-  want=$(mtu_set_value)
-  if [ "$S_MODE" = server ]; then dev=$(ifc_by_peer "$S_IP"); addr=$S_IP
-  else
-    dev="ppp-$S_NAME"
-    addr=$(ip -o -4 addr show dev "$dev" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="peer"){sub("/.*","",$(i+1)); print $(i+1); exit}}')
-  fi
-  [ -n "$dev" ] && [ -n "$addr" ] && iface_up "$dev" || return 0
-  (
-    local cur st=ok t cnt
-    cur=$(ip -o link show dev "$dev" 2>/dev/null | sed -n 's/.* mtu \([0-9]*\).*/\1/p')
-    if ! ping -c 2 -i 0.3 -W 2 -n -q -M do -s 56 -I "$dev" "$addr" >/dev/null 2>&1; then st=unknown
-    else
-      # two different problems, kept apart: "lowered" = the router asked for less than we set; "bad" = even the size the link really
-      # uses (the smaller of the two) does not get through. Both can be true at once.
-      t=$want; [ -z "$cur" ] || [ "$cur" -ge "$want" ] || t=$cur
-      if ! ping -c 3 -i 0.3 -W 2 -n -q -M do -s $((t - 28)) -I "$dev" "$addr" >/dev/null 2>&1; then
-        if [ "$t" -lt "$want" ]; then st=both; else st=bad; fi
-      elif [ "$t" -lt "$want" ]; then st=lowered
-      fi
-    fi
-    if ! mtu_is_auto; then      # a FIXED size is never changed by the server: it only warns when the size stops passing (two checks in a row, so one lost ping does not alarm)
-      mkdir -p "$STATE_DIR/mtu-fixed"
-      case "$st" in
-        bad|both)
-          cnt=$(( $(cat "$STATE_DIR/mtu-fixed/$name" 2>/dev/null || echo 0) + 1 )); echo "$cnt" > "$STATE_DIR/mtu-fixed/$name"
-          if [ "$cnt" -ge 2 ] && ! mtu_auto_note "$name" fixedbad; then mtu_log "$name" bad "fixed MTU" "$t bytes does not pass through this tunnel (two checks in a row). Lower the MTU in the settings of this connection, or set mtu = auto"; fi ;;
-        ok|lowered)
-          rm -f "$STATE_DIR/mtu-fixed/$name"
-          if [ -f "$STATE_DIR/mtu-auto/$name.alert-fixedbad" ]; then mtu_auto_clear "$name" fixedbad; mtu_log "$name" info "fixed MTU" "$want bytes passes again"; fi ;;
-      esac
-    fi
-    echo "$name $st $want ${cur:-0} $(date +%s)" > "$MTU_VTMP/$name"
-  ) &
-}
+# mtu-verify [NAME]: "test now" (the button of the measurement page): ONE full test, at once, of every connected tunnel (or of NAME):
+# the pings of both addresses and the packet-size check, exactly what the watcher does every test_every minutes. When the size of a
+# link does not pass, going down starts (one step a minute, by the watcher). Results: quality/NAME.last, mtu-test/NAME.far|ded
 cmd_mtu_verify() {
   need_root
   command -v ping >/dev/null 2>&1 || return 0
-  MTU_ONLY_NAME=${1:-}
-  MTU_VTMP=$(mktemp -d)
-  for_each_site mtu_verify_cb
-  wait
-  mkdir -p "$STATE_DIR"
-  local f out="$STATE_DIR/mtu-status" tmp
-  tmp=$(mktemp)
-  # keep the lines of tunnels that were not looked at in this run (single-name run), drop the ones that no longer exist
-  if [ -n "$MTU_ONLY_NAME" ] && [ -f "$out" ]; then grep -v "^$MTU_ONLY_NAME " "$out" > "$tmp" || true; fi
-  for f in "$MTU_VTMP"/*; do [ -f "$f" ] && cat "$f" >> "$tmp"; done
-  mv "$tmp" "$out"; chmod 644 "$out"
-  rm -rf "$MTU_VTMP"; MTU_ONLY_NAME=""
-  [ -z "${QUIET:-}" ] && cat "$out" || true
+  mkdir -p "$STATE_DIR/quality" "$STATE_DIR/mtu-test"
+  exec 6>"$STATE_DIR/.quality.lock"
+  flock -w 50 6 || die "Another test is running right now. Try again in a minute."
+  Q_FORCE=1; Q_ONLY=${1:-}
+  quality_run
+  Q_FORCE=""; Q_ONLY=""
 }
 
 # two active dial-in clients with the same network AND the same distance (metric): the traffic is split between them
@@ -1992,34 +1872,60 @@ check_dup_routes() {
 # pingstat ARGS...: "LOSS AVG MAX JITTER" of 5 quick pings, "- - - -" when ping cannot run at all
 pingstat() {
   local out loss rtt
-  out=$(ping -c 5 -i 0.2 -W 1 -n -q "$@" 2>&1) || true
+  out=$(ping -c "${Q_COUNT:-5}" -i 0.2 -W 1 -n -q "$@" 2>&1) || true
   loss=$(printf '%s\n' "$out" | sed -n 's/.* \([0-9.]*\)% packet loss.*/\1/p' | head -n1)
   [ -n "$loss" ] || { echo "- - - -"; return; }
   rtt=$(printf '%s\n' "$out" | sed -n 's|^r[a-z-]* min/avg/max/[a-z]* = [0-9.]*/\([0-9.]*\)/\([0-9.]*\)/\([0-9.]*\).*|\1 \2 \3|p' | head -n1)
   if [ -n "$rtt" ]; then echo "$loss $rtt"; else echo "$loss - - -"; fi
 }
+# quality_cb: one connection. Every minute a line goes to quality/NAME.log (up/down and the byte counters: the history). Every test_every
+# minutes (and at once for a new link) a full TEST is done: ping_count pings to the far end of the tunnel, to the extra test address
+# (test_addr, if any) and to the router outside; the answer is kept in quality/NAME.last. Then the packet-size check (mtu_probe).
 quality_cb() {
   [ "$S_DISABLED" != yes ] || return 0
   [ -z "${Q_ONLY:-}" ] || [ "$S_NAME" = "$Q_ONLY" ] || return 0
-  local dev addr outer="" name=$S_NAME log
+  local dev addr outer="" name=$S_NAME log last tick now idx lt="" lidx="" due=0 ta=$S_TEST_ADDR
   if [ "$S_MODE" = server ]; then dev=$(ifc_by_peer "$S_IP"); addr=$S_IP; outer=$(ppp_peer_public "$dev"); [ -n "$outer" ] || outer=${Q_DIALIN_OUTER:-}
   else
     dev="ppp-$S_NAME"
     addr=$(ip -o -4 addr show dev "$dev" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="peer"){sub("/.*","",$(i+1)); print $(i+1); exit}}' || true)
     outer=$S_HOST; is_ipv4 "$outer" || outer=$(resolve_v4 "$outer")
   fi
-  log="$STATE_DIR/quality/$name.log"
+  log="$STATE_DIR/quality/$name.log"; last="$STATE_DIR/quality/$name.last"; tick="$STATE_DIR/quality/$name.tick"
+  now=$(date +%s)
   if [ -z "$dev" ] || [ -z "$addr" ] || ! iface_up "$dev"; then
-    echo "$(date +%s) down - - - - - - - - -" >> "$log"; return 0
+    echo "$now down - - - - - - - - -" >> "$log"
+    echo "t=$now state=down" > "$last"
+    rm -f "$tick" "$STATE_DIR/mtu-test/$name.far" "$STATE_DIR/mtu-test/$name.ded"
+    return 0
   fi
+  tst_cfg
+  idx=$(cat "${SYS_NET:-/sys/class/net}/$dev/ifindex" 2>/dev/null || echo 0)
+  if [ -f "$tick" ]; then read -r lt lidx < "$tick" || true; fi
+  if [ -z "$lt" ] || [ "$lidx" != "$idx" ]; then       # a new link (the interface has another number): test at once, forget the old results
+    due=1; rm -f "$STATE_DIR/mtu-test/$name.far" "$STATE_DIR/mtu-test/$name.ded"
+  elif [ -n "${Q_FORCE:-}" ] || [ $((now - lt)) -ge $((T_EVERY * 60 - 20)) ]; then due=1; fi
+  [ -z "$ta" ] || test_route_set "$dev" "$ta"
   (
-    local i o rx tx
-    i=$(pingstat -I "$dev" "$addr")
-    if [ -n "$outer" ]; then o=$(pingstat "$outer"); else o="- - - -"; fi
+    local i o d rx tx loss sf="0" sd="0"
     rx=$(cat "${SYS_NET:-/sys/class/net}/$dev/statistics/rx_bytes" 2>/dev/null || echo -); tx=$(cat "${SYS_NET:-/sys/class/net}/$dev/statistics/tx_bytes" 2>/dev/null || echo -)
-    # outside numbers: loss, avg, max only (jitter of the road is not shown)
-    set -- $o
-    echo "$(date +%s) up $i $1 $2 $3 $rx $tx" >> "$log"
+    if [ "$due" = 1 ]; then
+      Q_COUNT=$T_COUNT
+      i=$(pingstat -I "$dev" "$addr")
+      if [ -n "$outer" ]; then o=$(pingstat "$outer"); else o="- - - -"; fi
+      if [ -n "$ta" ]; then d=$(pingstat -I "$dev" "$ta"); else d="- - - -"; fi
+      # outside numbers: loss, avg, max only (jitter of the road is not shown)
+      set -- $o
+      echo "$now up $i $1 $2 $3 $rx $tx" >> "$log"
+      echo "$now $idx" > "$tick"
+      echo "t=$now state=up n=$T_COUNT far=${i// /,} ded=${d// /,} ded_addr=${ta:--}" > "$last"
+      loss=${i%% *}; case "$loss" in ''|-) sf=0 ;; *) sf=$(awk -v l="$loss" 'BEGIN { printf "%d", 100 - l + 0.5 }') ;; esac
+      loss=${d%% *}; case "$loss" in ''|-) sd=0 ;; *) sd=$(awk -v l="$loss" 'BEGIN { printf "%d", 100 - l + 0.5 }') ;; esac
+    else
+      echo "$now up - - - - - - - $rx $tx" >> "$log"
+    fi
+    mtu_probe "$name" far "$dev" "$addr" "$sf" "$due"
+    [ -z "$ta" ] || mtu_probe "$name" ded "$dev" "$ta" "$sd" "$due"
   ) &
 }
 # alert_quality NAME: a Telegram message when the last 5 minutes were poor, and one when it is good again
@@ -2116,8 +2022,8 @@ quality_reconnect() {
     return 0
   fi
   echo "$now" >> "$rec"
-  if [ "$S_MODE" = server ]; then setsid "$0" disconnect "$name" >/dev/null 2>&1 < /dev/null &
-  else setsid "$0" reconnect "$name" >/dev/null 2>&1 < /dev/null &
+  if [ "$S_MODE" = server ]; then setsid "$0" disconnect "$name" >/dev/null 2>&1 < /dev/null 6>&- &
+  else setsid "$0" reconnect "$name" >/dev/null 2>&1 < /dev/null 6>&- &
   fi
   echo "$(date '+%F %T') $name poor for $N minutes: reconnected automatically ($((cnt + 1)) of $maxd in 24 h)" >> "$STATE_DIR/watch.log"
   printf '{"t": %s, "k": "warn", "m": "%s"}\n' "$now" "Connection $name was poor for $N minutes: reconnected automatically ($((cnt + 1)) of $maxd in 24 hours)" >> "$STATE_DIR/events.log" 2>/dev/null || true
@@ -2125,23 +2031,31 @@ quality_reconnect() {
 }
 quality_alert_cb() { [ "$S_DISABLED" != yes ] || return 0; quality_alert "$S_NAME"; }
 quality_reconnect_cb() { [ "$S_DISABLED" != yes ] || return 0; quality_reconnect "$S_NAME"; }
-cmd_quality_sample() {
-  need_root
-  [ -f "$SITES" ] || return 0
-  command -v ping >/dev/null 2>&1 || return 0
-  mkdir -p "$STATE_DIR/quality"
-  Q_ONLY=${1:-}
+# quality_run: the tests of every connected tunnel (Q_ONLY = one NAME, Q_FORCE = test now, not only when it is due)
+quality_run() {
   Q_DIALIN_OUTER=$(ipsec status 2>/dev/null | sed -n 's/^l2tp-gw-dialin\[[0-9]*\]: ESTABLISHED.*\.\.\.\([0-9.]*\)\[.*/\1/p' | sort -u)
   [ "$(printf '%s\n' "$Q_DIALIN_OUTER" | grep -c .)" = 1 ] || Q_DIALIN_OUTER=""
   for_each_site quality_cb
   wait
+}
+cmd_quality_sample() {
+  need_root
+  [ -f "$SITES" ] || return 0
+  command -v ping >/dev/null 2>&1 || return 0
+  mkdir -p "$STATE_DIR/quality" "$STATE_DIR/mtu-test"
+  exec 6>"$STATE_DIR/.quality.lock"
+  flock -n 6 || return 0
+  Q_ONLY=${1:-}
+  quality_run
   Q_ONLY=""
   local f n
   for f in "$STATE_DIR"/quality/*.log; do        # keep 7 days (one line a minute)
     [ -f "$f" ] || continue
     if [ "$(wc -l < "$f")" -gt 10200 ]; then tail -n 10080 "$f" > "$f.tmp" && mv "$f.tmp" "$f"; fi
     n=$(basename "$f" .log)
-    grep -q "^\[$n\]" "$SITES" 2>/dev/null || rm -f "$f" "$STATE_DIR/quality/$n.alert" "$STATE_DIR/quality/$n.recon" "$STATE_DIR/quality/$n.capmsg"      # a deleted site takes its history with it
+    if ! grep -q "^\[$n\]" "$SITES" 2>/dev/null; then      # a deleted site takes its history with it
+      rm -f "$f" "$STATE_DIR/quality/$n.alert" "$STATE_DIR/quality/$n.recon" "$STATE_DIR/quality/$n.capmsg" "$STATE_DIR/quality/$n.last" "$STATE_DIR/quality/$n.tick" "$STATE_DIR/mtu-test/$n.far" "$STATE_DIR/mtu-test/$n.ded"
+    fi
   done
   for_each_site quality_alert_cb
   for_each_site quality_reconnect_cb
@@ -2189,7 +2103,7 @@ cmd_check() {
   else
     chk WARN "traffic collector is not running - no usage statistics, no auto reconnect (run: l2tp-gw-web install)"
   fi
-  DI_USER=(); DI_IP=()
+  DI_USER=(); DI_IP=(); TA_USED=()
   if dialin_enabled; then
     if [ -f "$IPSEC_D/l2tp-gw-dialin.conf" ]; then chk OK "dial-in: IPsec connection l2tp-gw-dialin is configured"; else chk FAIL "dial-in is on but its IPsec config is missing (run: l2tp-gw apply)"; fi
     if ss -lun 2>/dev/null | grep -q ':1701 '; then chk OK "dial-in: xl2tpd listens on UDP 1701"; else chk FAIL "dial-in: nothing listens on UDP 1701"; fi
@@ -2535,11 +2449,7 @@ cmd_watch() {
   WATCH_IPSEC=$(ipsec status 2>/dev/null) || WATCH_IPSEC_OK=0
   for_each_site watch_site
   QUIET=1 "$0" mss-apply >/dev/null 2>&1 || true
-  QUIET=1 setsid timeout 600 "$0" mtu-auto >/dev/null 2>&1 < /dev/null 8>&- &      # automatic MTU: its own timing and lock, does not hold up the watcher
-  QUIET=1 timeout 45 "$0" quality-sample >/dev/null 2>&1 || true
-  if [ ! -f "$STATE_DIR/mtu-status" ] || [ $(( $(date +%s) - $(stat -c %Y "$STATE_DIR/mtu-status" 2>/dev/null || echo 0) )) -ge 300 ]; then
-    QUIET=1 timeout 60 "$0" mtu-verify >/dev/null 2>&1 || true
-  fi
+  QUIET=1 timeout 45 "$0" quality-sample >/dev/null 2>&1 || true      # the tests (each connection on its own interval) and the size checks
   if [ -n "$WATCH_NEED_APPLY" ]; then
     local now last
     now=$(date +%s); last=$(cat "$STATE_DIR/last-ddns-apply" 2>/dev/null || echo 0)
@@ -2604,6 +2514,8 @@ main() {
     status) cmd_status ;;
     check)  cmd_check ;;
     reconnect) cmd_reconnect "${2:-}" ;;
+    cut)       cmd_cut "${2:-}" ;;
+    cut-all)   cmd_cut_all "${2:-}" ;;
     logs)   cmd_logs "${2:-}" "${3:-200}" ;;
     backup) cmd_backup "${2:-}" ;;
     backup-auto) need_root; cmd_backup_auto ;;
@@ -2618,7 +2530,6 @@ main() {
     mtu-apply)   cmd_mtu_apply "${2:-}" ;;
     mss-apply)   need_root; cmd_mss_apply ;;
     mtu-verify)  cmd_mtu_verify "${2:-}" ;;
-    mtu-auto)    cmd_mtu_auto "${2:-}" ;;
     link-info)   cmd_link_info ;;
     quality-sample) cmd_quality_sample "${2:-}" ;;
     site-sync) cmd_site_sync ;;

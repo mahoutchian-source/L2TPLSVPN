@@ -14,7 +14,7 @@ Rule: the web never edits system config itself; it edits `/etc/l2tp-gw/*` and ca
 
 | Topic | `l2tp-gw` | `l2tp-gw-web` |
 |---|---|---|
-| Sites file keys | `reset_site`, `load_site`, `for_each_site` | `KEYS`, `OPTIONAL`, `load_sites`, `save_sites` |
+| Sites file keys | `reset_site`, `load_site`, `for_each_site` (test keys: `test_addr`, `ping_count`, `test_every`, `rtt_base`, `jit_base`, `mtu_min`) | `KEYS`, `OPTIONAL`, `load_sites`, `save_sites` |
 | Generated config | `gen_site`, `apply_*` | – |
 | Firewall / NAT | `apply_dialin_fw` (`L2TPGW-IN`), `apply_client_access` (`L2TPGW-ACC`), NAT chain `L2TPGW-NAT` | `firewall_state` |
 | Alerts, DDNS, DNS flush, config to Telegram | `notify_send`, `cmd_watch`, `watch_site`, `dns_flush*`, `cfg_send_check` | `settings_page`, `read_notify` |
@@ -22,6 +22,7 @@ Rule: the web never edits system config itself; it edits `/etc/l2tp-gw/*` and ca
 | Dial-in | `dialin-*`, `cmd_dialin_sync` | section "dial-in" |
 | Traffic, limits, reconnect, events, memory warning | – | section "traffic collector", `add_event`, `check_memory`, `archive_orphans` |
 | Route manager | – | section "route manager" (lists, rules, country data, safe mode) |
+| MTU, tests, cut | `mtu_value`, `dialin_announce`, `tst_cfg`, `quality_cb`, `mtu_probe`, `bigping`, `test_route_set`, `cmd_cut`, `cmd_cut_all`, `cmd_mtu_test` | `dir_def`, `eff_val`, `dir_fieldset`, `tests_fieldset`, `pct_col`, `base_col`, `ring`, `quality_page`, `conn_page`, `mtu_page`, `bg_cut` |
 | Look and feel | – | `CSS`, `JS`, `page()`, `dash_html`, `THEME_BOOT` |
 | HTTP routes | – | `do_GET`, `do_POST` in section "http" |
 | Commands | `cmd_*`, dispatcher at the end | `cmd_run`, `cmd_collect`, `cmd_install`, `cmd_setpass` |
@@ -48,7 +49,9 @@ Rule: the web never edits system config itself; it edits `/etc/l2tp-gw/*` and ca
     cd dev/t28 && bash run.sh   # 1.0.1 features (require firewall, PPP keep-alive, IPsec re-check, multipath status, duplicate networks, Persian password); needs `ip` (apt install iproute2)
     cd dev/t29 && bash run.sh   # 1.0.3 MTU (per-connection mtu, mtu-apply, mtu-test with a ping stub, panel page); needs `ip`
     cd dev/t36 && bash run.sh   # 1.4.1/1.4.2 quality list, shared address, ring, no-jump script
-    cd dev/t37 && bash run.sh   # 1.4.3 automatic / fixed MTU, defaults, dial-in size, link-info (49 checks; ping stub in t37/bin refuses a DF packet bigger than the link MTU)
+    cd dev/t37 && bash run.sh   # 1.4.4 the 22 rules: MTU/MRU, tests, steps, floor, cut, colours, Settings, pages (129 checks). The ping stub (t37/bin/ping, also in t29) prints a ping summary, refuses a DF packet over the link MTU, can answer 'Frag needed' (file toobig), can lose packets (pingloss[.ADDR]) and send a real packet through a tun held by dev/tunhold.py (file sendreal)
+    cd dev/t31 && bash run.sh   # quality-sample, alert (uses Q_FORCE=1 to test every call), pages
+    cd dev/t34 && bash run.sh   # per-connection limits and automatic reconnect (the lock bug was found here)
     cd dev/t30 && bash shots.sh   # screenshots of Dashboard and Sites (dark + light) with fake traffic; needs playwright and chromium
     cd dev/t26 && bash shots.sh # screenshots (needs playwright/chromium)
 

@@ -1,4 +1,4 @@
-# l2tp-gw 1.4.3 (stable)
+# l2tp-gw 1.4.4 (stable)
 
 An Ubuntu/Debian server that acts as an **L2TP/IPsec gateway** for MikroTik routers:
 
@@ -48,6 +48,7 @@ Dial-in needs UDP 500 and UDP 4500 open from anywhere. UDP 1701 is blocked by th
 ## Everyday commands
 
     l2tp-gw add | remove NAME | list | edit | apply | status | check | reconnect NAME | logs [NAME]
+    l2tp-gw mtu-test NAME|ADDRESS [INTERFACE] | mtu-verify [NAME] | cut NAME | cut-all in|out
     l2tp-gw backup [FILE] | restore FILE | version
     l2tp-gw-web setpass
 
